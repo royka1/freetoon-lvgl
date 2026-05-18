@@ -7,6 +7,10 @@ of side processes brings the hardware back to life (boiler, P1 meter, vent,
 weather, packages) and exposes everything over a tiny progressive web app so
 you can also drive the house from your phone.
 
+![Demo](docs/demo.gif)
+
+*Live capture from the device — clock ticking, vent fan spinning, water flow & energy values updating in real time.*
+
 ![Home screen](docs/screenshots/home.png)
 
 ## Why
