@@ -118,3 +118,18 @@ const lv_img_dsc_t * weather_icon_for_lg(const char * letter) {
         default:  return &icon_wx_cloud_lg;
     }
 }
+
+unsigned int weather_icon_color_for(const char * letter) {
+    if (!letter || !letter[0]) return 0xc8d4e0;
+    switch (letter[0]) {
+        case 'a':                       return 0xffd24a;   /* sun        — warm yellow */
+        case 'b': case 'j':             return 0xf2c66a;   /* sun+cloud  — softer yellow */
+        case 'c': case 'f': case 'l':   return 0x6aa8ff;   /* rain_light — sky blue   */
+        case 'd': case 'r':             return 0xc8d4e0;   /* cloud      — blue-grey  */
+        case 'e': case 'h': case 'q':   return 0x3a78d6;   /* rain_heavy — deep blue  */
+        case 'g': case 'm':             return 0xffb938;   /* thunder    — amber bolt */
+        case 'n': case 'p': case 'u':   return 0xe8f0ff;   /* snow/hail  — ice white  */
+        case 'k': case 'i':             return 0x9aa6b3;   /* fog        — neutral grey */
+        default:                        return 0xc8d4e0;
+    }
+}

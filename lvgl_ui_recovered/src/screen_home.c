@@ -52,6 +52,11 @@ static lv_obj_t * waste_icon_2;
 static lv_obj_t * pressure_banner = NULL;
 static lv_obj_t * pressure_banner_lbl = NULL;
 static lv_obj_t * lbl_t_program;
+/* Four small one-tap preset buttons sitting just below the program pill —
+ * Comfort / Home / Sleep / Away. Each fires boxtalk_set_program(N) so the
+ * Toon jumps straight to that preset (and the schedule keeps progressing
+ * from there). Active preset gets a white border. */
+static lv_obj_t * tile_btn_preset[4] = {0};
 static lv_obj_t * tile_img_flame;
 static lv_obj_t * tile_img_faucet;
 static lv_obj_t * tile_img_drop;
@@ -203,6 +208,13 @@ static void on_program_toggle(lv_event_t * e) {
     (void)e;
     if (toon_state.active_state < 0) boxtalk_resume_schedule();
     else                             boxtalk_set_manual();
+}
+
+/* Direct preset tap on one of the four pill-side buttons. user_data carries
+ * the Toon program state (0=Comfort, 1=Home, 2=Sleep, 3=Away). */
+static void on_tile_preset(lv_event_t * e) {
+    int s = (int)(intptr_t)lv_event_get_user_data(e);
+    boxtalk_set_program(s);
 }
 
 static void on_program_tap(lv_event_t * e) {
@@ -426,6 +438,21 @@ static void refresh_cb(lv_timer_t * t) {
         lv_obj_set_style_text_color(lbl_t_program, lv_color_hex(0xffaa44), 0); /* manual = amber */
     else
         lv_obj_set_style_text_color(lbl_t_program, lv_color_hex(COL_TEXT_DIM), 0);
+
+    /* Direct-preset row: white border on whichever preset is currently in
+     * effect (only while the schedule is in the driver's seat — when manual
+     * we drop all borders so the user sees no preset is active). */
+    {
+        int preset = (toon_state.active_state >= 0 &&
+                      toon_state.program_state >= 0 &&
+                      toon_state.program_state <= 3)
+                         ? toon_state.program_state : -1;
+        for (int i = 0; i < 4; i++) {
+            if (!tile_btn_preset[i]) continue;
+            lv_obj_set_style_border_width(tile_btn_preset[i],
+                                          (i == preset) ? 2 : 0, 0);
+        }
+    }
 
     /* Active scheme (Comfort/Home/Sleep/Away) or "Manual" if overridden. */
     lv_label_set_text(lbl_t_program, program_label());
@@ -777,6 +804,8 @@ static void refresh_cb(lv_timer_t * t) {
                 lv_label_set_text_fmt(fc_temp_lbl[i], "%.0f\xc2\xb0",
                                       h->temperature);
                 lv_img_set_src(fc_icon[i], weather_icon_for(h->icon));
+                lv_obj_set_style_img_recolor(fc_icon[i],
+                    lv_color_hex(weather_icon_color_for(h->icon)), 0);
                 if (h->wind_dir[0]) {
                     lv_label_set_text_fmt(fc_wind_lbl[i], "%s %d Bft",
                                           h->wind_dir, h->wind_bft);
@@ -811,6 +840,8 @@ static void refresh_cb(lv_timer_t * t) {
                                       "%.0f\xc2\xb0 (%.0f\xc2\xb0)",
                                       d->max_temp, d->min_temp);
                 lv_img_set_src(fc_icon[i], weather_icon_for(d->icon));
+                lv_obj_set_style_img_recolor(fc_icon[i],
+                    lv_color_hex(weather_icon_color_for(d->icon)), 0);
                 if (d->wind_dir[0]) {
                     lv_label_set_text_fmt(fc_wind_lbl[i], "%s %d Bft",
                                           d->wind_dir, d->wind_bft);
@@ -837,6 +868,8 @@ static void refresh_cb(lv_timer_t * t) {
                                   "%.0f\xc2\xb0 (%.0f\xc2\xb0)",
                                   d->max_temp, d->min_temp);
             lv_img_set_src(fc_icon[i], weather_icon_for(d->icon));
+            lv_obj_set_style_img_recolor(fc_icon[i],
+                lv_color_hex(weather_icon_color_for(d->icon)), 0);
             if (d->wind_dir[0]) {
                 lv_label_set_text_fmt(fc_wind_lbl[i], "%s %d Bft",
                                       d->wind_dir, d->wind_bft);
@@ -994,6 +1027,8 @@ static void refresh_cb(lv_timer_t * t) {
                                   "%.0f\xc2\xb0 (%.0f\xc2\xb0)",
                                   d->max_temp, d->min_temp);
             lv_img_set_src(fc_icon[i], weather_icon_for(d->icon));
+            lv_obj_set_style_img_recolor(fc_icon[i],
+                lv_color_hex(weather_icon_color_for(d->icon)), 0);
             if (d->wind_dir[0])
                 lv_label_set_text_fmt(fc_wind_lbl[i], "%s %d Bft",
                                       d->wind_dir, d->wind_bft);
@@ -1173,6 +1208,39 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_font(lbl_t_program, &lv_font_montserrat_22, 0);
     lv_label_set_text(lbl_t_program, "--");
     lv_obj_center(lbl_t_program);
+
+    /* Direct-preset row just below the pill — one tap to set Comfort /
+     * Home / Sleep / Away. Colours mirror the schedule editor and heater
+     * detail screen for instant recognition. The active preset gets a
+     * white border, updated in refresh_cb. Width 78 so "Comfort" doesn't
+     * clip at 18-pt; row centred at +118 so it sits between the pill
+     * (bottom ~y=276) and the metrics strip (top ~y=334). */
+    {
+        const char * names[4] = {"Comfort", "Home", "Sleep", "Away"};
+        uint32_t     cols[4]  = {0xcc7733, 0x3377cc, 0x553388, 0x557788};
+        const int    bw = 78, bh = 34, gap = 4;
+        int total = 4 * bw + 3 * gap;
+        for (int i = 0; i < 4; i++) {
+            lv_obj_t * b = lv_btn_create(th);
+            lv_obj_set_size(b, bw, bh);
+            lv_obj_align(b, LV_ALIGN_CENTER,
+                         -total / 2 + i * (bw + gap) + bw / 2, 118);
+            lv_obj_set_style_bg_color(b, lv_color_hex(cols[i]), 0);
+            lv_obj_set_style_radius(b, 8, 0);
+            lv_obj_set_style_border_color(b, lv_color_hex(0xffffff), 0);
+            lv_obj_set_style_border_width(b, 0, 0);
+            lv_obj_set_style_pad_all(b, 0, 0);
+            lv_obj_set_ext_click_area(b, 6);
+            lv_obj_add_event_cb(b, on_tile_preset, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)i);
+            lv_obj_t * bl = lv_label_create(b);
+            lv_label_set_text(bl, names[i]);
+            lv_obj_set_style_text_color(bl, lv_color_hex(0xffffff), 0);
+            lv_obj_set_style_text_font(bl, &lv_font_montserrat_18, 0);
+            lv_obj_center(bl);
+            tile_btn_preset[i] = b;
+        }
+    }
 
     /* Burner status sits above the metrics strip. The icons follow it so
        the flame/faucet stays paired with the text. */

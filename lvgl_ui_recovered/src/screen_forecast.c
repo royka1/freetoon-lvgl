@@ -59,8 +59,11 @@ static void refresh_cb(lv_timer_t * t) {
             lv_label_set_text(fc_day_lbl[i], h->label);
             lv_label_set_text_fmt(fc_temp_lbl[i], "%.0f\xc2\xb0",
                                   h->temperature);
-            if (fc_icon[i])
+            if (fc_icon[i]) {
                 lv_img_set_src(fc_icon[i], weather_icon_for_lg(h->icon));
+                lv_obj_set_style_img_recolor(fc_icon[i],
+                    lv_color_hex(weather_icon_color_for(h->icon)), 0);
+            }
             if (fc_wind_lbl[i]) {
                 if (h->wind_dir[0])
                     lv_label_set_text_fmt(fc_wind_lbl[i], "%s %d Bft",
@@ -86,8 +89,11 @@ static void refresh_cb(lv_timer_t * t) {
             lv_label_set_text_fmt(fc_temp_lbl[i],
                                   "%.0f\xc2\xb0 (%.0f\xc2\xb0)",
                                   d->max_temp, d->min_temp);
-            if (fc_icon[i])
+            if (fc_icon[i]) {
                 lv_img_set_src(fc_icon[i], weather_icon_for_lg(d->icon));
+                lv_obj_set_style_img_recolor(fc_icon[i],
+                    lv_color_hex(weather_icon_color_for(d->icon)), 0);
+            }
             if (fc_wind_lbl[i]) {
                 if (d->wind_dir[0])
                     lv_label_set_text_fmt(fc_wind_lbl[i], "%s %d Bft",

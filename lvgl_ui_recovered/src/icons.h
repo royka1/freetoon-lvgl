@@ -59,6 +59,11 @@ extern const lv_img_dsc_t icon_trash_lg;
 const lv_img_dsc_t * weather_icon_for(const char * letter);
 const lv_img_dsc_t * weather_icon_for_lg(const char * letter);
 
+/* RGB tint to apply via lv_obj_set_style_img_recolor when rendering the
+ * weather icon. Sun = warm yellow, rain = steel blue, thunder = amber,
+ * snow = ice-white, fog = grey, cloud = soft blue-grey. */
+unsigned int weather_icon_color_for(const char * letter);
+
 extern const lv_img_dsc_t icon_wx_sun;
 extern const lv_img_dsc_t icon_wx_sun_cloud;
 extern const lv_img_dsc_t icon_wx_cloud;
