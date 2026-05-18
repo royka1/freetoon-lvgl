@@ -111,6 +111,41 @@ def gen(name, w, h, fn, outfile):
 gen("icon_flame",  W_FLAME, H_FLAME, flame_alpha,  "icon_flame.h")
 gen("icon_faucet", W_FAUC,  H_FAUC,  faucet_alpha, "icon_faucet.h")
 gen("icon_drop",   W_DROP,  H_DROP,  drop_alpha,   "icon_drop.h")
+
+# --- RADIATOR + FLAME (compact 32x28) — Toon-style CH-heating glyph.
+# Layout (column ranges in image-space):
+#   x  0..9    : small upright flame
+#   x 12..31   : 4 vertical radiator fins with top + bottom caps
+W_RAD, H_RAD = 32, 28
+def radiator_alpha(x, y):
+    # Mini-flame on the left, top-aligned, 10x16
+    if 0 <= x <= 9 and 4 <= y <= 22:
+        fx, fy = x, y - 4
+        FW, FH = 10, 18
+        cx = FW / 2.0 - 0.5
+        t = fy / (FH - 1)
+        if t < 0.85:
+            half = (FW / 2.0 - 0.5) * math.sqrt(max(0.0, t / 0.85))
+        else:
+            r = (1.0 - t) / 0.15
+            half = (FW / 2.0 - 0.5) * math.sqrt(max(0.0, r))
+        half += 0.3 * math.sin(t * math.pi * 3.0)
+        d = abs(fx - cx) - half
+        if d <= -1: return 255
+        if d <   1: return int((1 - d) * 0.5 * 255)
+    # Radiator on the right
+    R_X0, R_X1 = 12, 31           # body extent
+    R_Y0, R_Y1 = 4, 25            # body extent
+    if R_X0 <= x <= R_X1 and R_Y0 <= y <= R_Y1:
+        # Top + bottom horizontal caps (2 px thick)
+        if R_Y0 <= y <= R_Y0 + 1 or R_Y1 - 1 <= y <= R_Y1:
+            return 255
+        # 4 fins: x positions 13,17,21,25 each 3 px wide → 3,7,11,15 mod 4
+        col = x - 13
+        if col % 4 == 0 or col % 4 == 1 or col % 4 == 2:
+            return 255
+    return 0
+gen("icon_radiator", W_RAD, H_RAD, radiator_alpha, "icon_radiator.h")
 # (icon_fan moved to BGRA emit below — alpha-8 fan + rotation = LVGL 8.3 bug)
 
 # --- FAN (3-blade) — used by the Vent tile, rotated via lv_img_set_angle.

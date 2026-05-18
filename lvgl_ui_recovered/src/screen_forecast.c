@@ -11,6 +11,7 @@
 #include "screens.h"
 #include "weather.h"
 #include "icons.h"
+#include "settings.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -49,7 +50,9 @@ static void refresh_cb(lv_timer_t * t) {
     lv_label_set_text(lbl_title, weather_state.weatherreport_title);
     lv_label_set_text(lbl_body,  weather_state.weatherreport_text);
 
-    if (weather_state.hour_count > 0) {
+    int show_hourly = settings.forecast_mode != FORECAST_DAILY
+                      && weather_state.hour_count > 0;
+    if (show_hourly) {
         for (int i = 0; i < weather_state.hour_count
                      && i < WEATHER_FORECAST_DAYS; i++) {
             const weather_hour_t * h = &weather_state.hours[i];

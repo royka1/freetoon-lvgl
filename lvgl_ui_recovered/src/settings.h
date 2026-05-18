@@ -21,7 +21,43 @@ typedef struct {
                                     fetch — default 6249 ≈ Berkhout (KNMI
                                     station closest to Medemblik). 0 disables
                                     the hourly fetch. */
+    int  forecast_mode;          /* 0 = auto (hourly if available, else daily)
+                                    1 = force hourly
+                                    2 = force daily */
+    /* OT bridge / OTGW configuration — three-way selector matching
+       ot_mode_switch.sh:
+         "off"      — bare keteladapter on /dev/ttymxc0, no bridge.
+                      Bulletproof fallback; PWA boiler card not lit.
+         "proxy"    — quby_bridge in proxy mode: shuttles bytes happ↔
+                      keteladapter 1:1 and republishes BoilerInfo on
+                      BoxTalk. Default. Original heat path preserved
+                      plus full PWA boiler card.
+         "wireless" — quby_bridge in active mode + OTGW GW=2: bridge
+                      fakes Quby responses to happ and forwards CS/CH/
+                      etc to OTGW via port 25238. Keteladapter not in
+                      loop. Use as fallback if keteladapter dies.
+       Legacy values "keteladapter"→proxy, "otgw"→wireless are migrated
+       on load. */
+    char ot_bridge_mode[16];     /* "off" | "proxy" | "wireless" — default proxy */
+    char otgw_host[64];          /* "192.168.99.21" — IP or hostname (no scheme) */
+    char otgw_user[32];          /* HTTP Basic-Auth user, empty = no auth */
+    char otgw_pass[64];          /* HTTP Basic-Auth pass */
+
+    /* MQTT broker for the banner subscriber. Empty host disables subscriber.
+     * Topics: filter strings the subscriber listens on; each new PUBLISH
+     * triggers a banner with topic+payload. Cap of 8 keeps the settings
+     * file small and the topic-select UI digestible. */
+    char mqtt_host[64];
+    int  mqtt_port;              /* 1883 default */
+    char mqtt_user[32];
+    char mqtt_pass[64];
+    char mqtt_topics[8][96];
+    int  mqtt_topic_count;
 } settings_t;
+
+#define FORECAST_AUTO   0
+#define FORECAST_HOURLY 1
+#define FORECAST_DAILY  2
 
 /* Display-side adjusted indoor temperature: raw + settings.temp_offset_centi/100 */
 float display_indoor_temp(float raw);

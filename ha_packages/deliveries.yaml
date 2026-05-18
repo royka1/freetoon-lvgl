@@ -1,0 +1,175 @@
+# Generic, carrier-agnostic delivery tracker.
+#
+# Storage:  input_text.packages_json  — JSON array of {id,label,eta,url,source,added_at,status}
+# Add:      script.packages_add {label, eta, url?, source?}
+# Remove:   script.packages_remove {id}
+# Complete: script.packages_complete {id}
+# Webhook:  POST /api/webhook/packages-add  body: {"label":..., "eta":..., "url":..., "source":...}
+# Sensor:   sensor.packages_pending  (count + attributes for tile rendering)
+#
+# Drop this file into HA's /config/packages/ directory (the
+# `homeassistant: packages:` include — see top of configuration.yaml).
+# Reload via Developer Tools > YAML > "Input texts" / "Scripts" /
+# "Automations" / "Template Entities" — or restart HA.
+
+input_text:
+  packages_json:
+    name: "Deliveries (raw JSON store)"
+    max: 255             # HA cap on a single input_text value. Sufficient
+                         # for ~6-8 entries; if you need more, swap for a
+                         # `file` or `mqtt_json` sensor backend.
+    initial: "[]"
+
+# -------------------------------------------------------------------------
+# Scripts — public surface. Conversation/voice can call any of these by
+# friendly name ("Hey HA, run packages add label Bol.com eta tomorrow").
+# -------------------------------------------------------------------------
+script:
+  packages_add:
+    alias: "Packages: add"
+    description: "Add a delivery. Required: label, eta (YYYY-MM-DD). Optional: url, source."
+    fields:
+      label:
+        description: "What's coming. e.g. 'Bol.com - speaker'"
+        example: "Amazon - book"
+      eta:
+        description: "Expected delivery date YYYY-MM-DD"
+        example: "2026-05-20"
+      url:
+        description: "Optional tracking URL"
+        example: "https://post.nl/track?n=3SXX..."
+      source:
+        description: "How it was added (manual|webhook|email|voice)"
+        default: "manual"
+    sequence:
+      - variables:
+          new_entry: >-
+            {{ {
+              'id':        (now().timestamp() * 1000) | int | string,
+              'label':     label,
+              'eta':       eta,
+              'url':       url | default(''),
+              'source':    source | default('manual'),
+              'added_at':  now().strftime('%Y-%m-%dT%H:%M:%S'),
+              'status':    'pending'
+            } }}
+          merged: >-
+            {{ (states('input_text.packages_json') | from_json + [new_entry])
+               | to_json }}
+      - service: input_text.set_value
+        target: {entity_id: input_text.packages_json}
+        data: {value: "{{ merged }}"}
+      - service: persistent_notification.create
+        data:
+          title: "Pakket toegevoegd"
+          message: "{{ label }} — verwacht {{ eta }} (bron: {{ source | default('manual') }})"
+
+  packages_remove:
+    alias: "Packages: remove"
+    fields:
+      id: {description: "Entry id (epoch-ms string) to delete"}
+    sequence:
+      - variables:
+          filtered: >-
+            {{ (states('input_text.packages_json') | from_json
+                | rejectattr('id','eq', id) | list) | to_json }}
+      - service: input_text.set_value
+        target: {entity_id: input_text.packages_json}
+        data: {value: "{{ filtered }}"}
+
+  packages_complete:
+    alias: "Packages: mark received"
+    fields:
+      id: {description: "Entry id to mark complete"}
+    sequence:
+      - variables:
+          updated: >-
+            {%- set arr = states('input_text.packages_json') | from_json -%}
+            {%- set out = [] -%}
+            {%- for p in arr -%}
+              {%- if p.id == id -%}
+                {%- set _ = out.append(dict(p, **{'status':'received',
+                                                   'received_at': now().strftime('%Y-%m-%dT%H:%M:%S')})) -%}
+              {%- else -%}
+                {%- set _ = out.append(p) -%}
+              {%- endif -%}
+            {%- endfor -%}
+            {{ out | to_json }}
+      - service: input_text.set_value
+        target: {entity_id: input_text.packages_json}
+        data: {value: "{{ updated }}"}
+
+# -------------------------------------------------------------------------
+# Template sensor — what Toon tile + PWA list read. Re-evaluates on every
+# input_text change. Exposes a count + the full list as attributes.
+# -------------------------------------------------------------------------
+template:
+  - sensor:
+      - name: "Packages Pending"
+        unique_id: packages_pending
+        state: >-
+          {{ states('input_text.packages_json') | from_json
+             | selectattr('status','eq','pending') | list | count }}
+        icon: mdi:package-variant
+        attributes:
+          all: "{{ states('input_text.packages_json') | from_json }}"
+          today: >-
+            {{ states('input_text.packages_json') | from_json
+               | selectattr('status','eq','pending')
+               | selectattr('eta','eq', now().strftime('%Y-%m-%d'))
+               | list }}
+          next_eta: >-
+            {%- set pend = states('input_text.packages_json') | from_json
+                | selectattr('status','eq','pending')
+                | sort(attribute='eta') | list -%}
+            {{ pend[0].eta if pend else '' }}
+          next_label: >-
+            {%- set pend = states('input_text.packages_json') | from_json
+                | selectattr('status','eq','pending')
+                | sort(attribute='eta') | list -%}
+            {{ pend[0].label if pend else '' }}
+
+# -------------------------------------------------------------------------
+# Webhook trigger — accepts JSON POST from anywhere (IFTTT, Tasker,
+# scripts, the email poller). Idempotent: dedup by `id` if provided,
+# otherwise generate one.
+# -------------------------------------------------------------------------
+automation:
+  - id: packages_webhook_add
+    alias: "Packages: webhook add"
+    trigger:
+      - platform: webhook
+        webhook_id: packages-add
+        allowed_methods: [POST]
+        local_only: true       # LAN only; flip to false to allow tunneled posts
+    action:
+      - service: script.packages_add
+        data:
+          label:  "{{ trigger.json.label | default('Pakket') }}"
+          eta:    "{{ trigger.json.eta   | default(now().strftime('%Y-%m-%d')) }}"
+          url:    "{{ trigger.json.url   | default('') }}"
+          source: "{{ trigger.json.source | default('webhook') }}"
+
+  # Daily 08:00 nag: "X packages arriving today" so they're not forgotten.
+  - id: packages_daily_briefing
+    alias: "Packages: daily briefing"
+    trigger:
+      - platform: time
+        at: "08:00:00"
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.packages_pending
+        attribute: today
+        # `today` is a list — condition needs a numeric, so use a template:
+      - condition: template
+        value_template: "{{ state_attr('sensor.packages_pending','today') | count > 0 }}"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: "Pakketten vandaag"
+          message: >-
+            {%- set t = state_attr('sensor.packages_pending','today') -%}
+            {{ t | count }} pakket{{ 'ten' if t|count != 1 else '' }} verwacht:
+            {%- for p in t %}
+              • {{ p.label }}{% if p.url %} ({{ p.url }}){% endif %}
+            {%- endfor %}

@@ -11,6 +11,7 @@
 #include "screens.h"
 #include "settings.h"
 #include "backlight.h"
+#include "boxtalk.h"
 #include <stdio.h>
 
 #define STACK_MAX 8
@@ -51,6 +52,11 @@ void ui_idle_tick(void) {
        if the on-screen click handler couldn't run for some reason. */
     if (wake_pending && is_dimmed) {
         fprintf(stderr, "[ui] waking from dim\n");
+        /* Wake event — single-shot BoxTalk query so the home screen shows
+         * the latest indoor temperature instead of whatever the periodic
+         * 15s background query last cached. Not polling — this is one
+         * query per wake. */
+        boxtalk_request_indoor_refresh();
         ui_pop();
         is_dimmed = 0;
         backlight_set(settings.active_brightness);

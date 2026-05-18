@@ -13,6 +13,10 @@
 #include "weather.h"
 #include "wastecollection.h"
 #include "ventilation.h"
+#include "homeassistant.h"
+#include "healthcheck.h"
+#include "pwa_server.h"
+#include "packages.h"
 #include "weather.h"
 #include "homewizard.h"
 
@@ -72,6 +76,13 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[main] waste_start failed\n");
     if (vent_start() != 0)
         fprintf(stderr, "[main] vent_start failed\n");
+    if (ha_start() != 0)
+        fprintf(stderr, "[main] ha_start failed\n");
+    if (healthcheck_start() != 0)
+        fprintf(stderr, "[main] healthcheck_start failed\n");
+    if (pwa_start() != 0)
+        fprintf(stderr, "[main] pwa_start failed\n");
+    packages_start();
 
     ui_init();
 

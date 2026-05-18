@@ -6,8 +6,10 @@
 #include "screens.h"
 #include "boxtalk.h"
 #include "settings.h"
+#include "packages.h"
 #include "weather.h"
 #include "wastecollection.h"
+#include "ventilation.h"
 #include "icons.h"
 #include <stdio.h>
 #include <string.h>
@@ -24,7 +26,8 @@ static lv_obj_t * lbl_temp;
 static lv_obj_t * lbl_setpoint;
 static lv_obj_t * lbl_program;
 static lv_obj_t * lbl_metrics;     /* TVOC / eCO2 / CH-water-pressure row */
-static lv_obj_t * lbl_burner;      /* "-> 90 C" when CH, hidden otherwise */
+static lv_obj_t * lbl_burner;      /* "90 C" when CH, hidden otherwise */
+static lv_obj_t * dim_img_flame;   /* CH flame — paired with lbl_burner */
 static lv_obj_t * dim_img_faucet;  /* DHW faucet — visible only on dhw_on */
 static lv_obj_t * dim_img_drop;    /* paired water-drop next to the faucet */
 static lv_obj_t * wx_icon = NULL;
@@ -34,7 +37,44 @@ static lv_obj_t * lbl_waste = NULL;
 static lv_obj_t * dim_fc_icon[WEATHER_FORECAST_DAYS];
 static lv_obj_t * dim_fc_day[WEATHER_FORECAST_DAYS];
 static lv_obj_t * dim_fc_temp[WEATHER_FORECAST_DAYS];
+static lv_obj_t * dim_vent_fan  = NULL;   /* spinning fan icon */
+static lv_obj_t * dim_vent_lbl  = NULL;   /* "57 %" — actual ExhFanSpeed */
+static int        dim_vent_period_ms = 0; /* current spin animation period */
 static lv_timer_t * refresh_timer = NULL;
+
+static void dim_vent_fan_anim_cb(void * obj, int32_t v) {
+    lv_img_set_angle((lv_obj_t *)obj, v);
+}
+static void dim_vent_apply_anim(int rpm) {
+    if (!dim_vent_fan) return;
+    /* Park below 50 rpm. See screen_home.c vent_apply_fan_anim — driving
+       off rpm because Itho's ExhFanSpeed is unreliable and its Low/High
+       labels are backwards on this unit. */
+    if (rpm < 50) {
+        if (dim_vent_period_ms == 0) return;
+        dim_vent_period_ms = 0;
+        lv_anim_del(dim_vent_fan, NULL);
+        return;
+    }
+    /* Same linear curve as the home tile: period_ms = 3500 - rpm, clamped. */
+    int period = 3500 - rpm;
+    if (period < 200)  period = 200;
+    if (period > 3500) period = 3500;
+    /* Hysteresis: every poll the rpm jitters ±1 which would re-spin the
+       anim from 0° if we treated each tiny period delta as a change. Only
+       restart when the period actually moves > 100 ms. */
+    if (abs(period - dim_vent_period_ms) < 100) return;
+    dim_vent_period_ms = period;
+    lv_anim_del(dim_vent_fan, NULL);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, dim_vent_fan);
+    lv_anim_set_exec_cb(&a, dim_vent_fan_anim_cb);
+    lv_anim_set_values(&a, 0, 3600);
+    lv_anim_set_time(&a, period);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&a);
+}
 
 static void on_wake_tap(lv_event_t * e) {
     (void)e;
@@ -99,19 +139,16 @@ static void refresh_cb(lv_timer_t * t) {
        degrees ("-> 90 C", red); DHW shows a faucet + water-drop icon pair
        (no text — the icons say it). Idle hides everything so the dim
        screen stays clean. */
-    if (lbl_burner) {
-        if (toon_state.burner_on) {
-            if (toon_state.ch_setpoint > 0)
-                lv_label_set_text_fmt(lbl_burner, "-> %.0f C",
-                                      toon_state.ch_setpoint);
-            else
-                lv_label_set_text(lbl_burner, "");
-            lv_obj_set_style_text_color(lbl_burner, lv_color_hex(0xff8866), 0);
-            lv_obj_clear_flag(lbl_burner, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(lbl_burner, LV_OBJ_FLAG_HIDDEN);
-        }
+    /* Show the radiator-with-flame glyph next to the indoor temp when the
+     * boiler is firing CH — original-Toon style. No "90 C" target text:
+     * the glyph itself is the signal. */
+    if (dim_img_flame) {
+        if (toon_state.burner_on)
+            lv_obj_clear_flag(dim_img_flame, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(dim_img_flame, LV_OBJ_FLAG_HIDDEN);
     }
+    if (lbl_burner) lv_obj_add_flag(lbl_burner, LV_OBJ_FLAG_HIDDEN);
     if (dim_img_faucet && dim_img_drop) {
         if (toon_state.dhw_on) {
             lv_obj_clear_flag(dim_img_faucet, LV_OBJ_FLAG_HIDDEN);
@@ -119,6 +156,42 @@ static void refresh_cb(lv_timer_t * t) {
         } else {
             lv_obj_add_flag(dim_img_faucet, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(dim_img_drop,   LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    /* Vent — fan icon spin tracks fan_rpm; label shows preset + pct +
+       remaining ("High 100 %" or "Timer 25m 100 %"). Source intentionally
+       omitted on the dim screen to keep it clean — full audit is on the
+       home tile. */
+    if (dim_vent_fan && dim_vent_lbl) {
+        if (vent_state.connected) {
+            /* memcpy snapshot — same defence as screen_home.c, see comment
+             * there. fan_info is a non-volatile char[] written by another
+             * thread; without the local copy refresh_cb can read a stale
+             * (or partial) view of the chars. */
+            char fi_local[16];
+            memcpy(fi_local, (const char *)vent_state.fan_info,
+                   sizeof(fi_local));
+            fi_local[sizeof(fi_local) - 1] = 0;
+            const char * preset = fi_local[0] ? fi_local : "?";
+            char pretty[24] = {0};
+            snprintf(pretty, sizeof(pretty), "%c%s",
+                     (preset[0] >= 'a' && preset[0] <= 'z')
+                         ? preset[0] - 'a' + 'A' : preset[0],
+                     preset + 1);
+            if (vent_state.remaining_min > 0)
+                lv_label_set_text_fmt(dim_vent_lbl, "%s %dm %d %%",
+                                      pretty, vent_state.remaining_min,
+                                      vent_state.speed_pct);
+            else
+                lv_label_set_text_fmt(dim_vent_lbl, "%s %d %%",
+                                      pretty, vent_state.speed_pct);
+            dim_vent_apply_anim(vent_state.fan_rpm);
+            lv_obj_clear_flag(dim_vent_fan, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(dim_vent_lbl, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(dim_vent_fan, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(dim_vent_lbl, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
@@ -213,6 +286,12 @@ lv_obj_t * screen_dim_create(void) {
     lv_obj_set_style_bg_opa(scr_root, LV_OPA_COVER, 0);
     lv_obj_clear_flag(scr_root, LV_OBJ_FLAG_SCROLLABLE);
 
+    /* Package banner overlay (hidden when queue empty). Attached BEFORE
+     * the wake-tap event handler so its CLICKABLE flag wins over the
+     * screen-wide wake — tapping the banner dismisses it without also
+     * waking the home screen. */
+    packages_banner_attach(scr_root);
+
     /* Whole screen is a wake target. */
     lv_obj_add_flag(scr_root, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(scr_root, on_wake_tap, LV_EVENT_CLICKED, NULL);
@@ -268,15 +347,27 @@ lv_obj_t * screen_dim_create(void) {
     lbl_burner = lv_label_create(scr_root);
     lv_obj_set_style_text_font(lbl_burner, &lv_font_montserrat_22, 0);
     lv_label_set_text(lbl_burner, "");
-    lv_obj_align(lbl_burner, LV_ALIGN_CENTER, 0, 225);
+    lv_obj_align(lbl_burner, LV_ALIGN_CENTER, 80, 150);
     lv_obj_add_flag(lbl_burner, LV_OBJ_FLAG_HIDDEN);
+
+    /* Toon-style radiator+flame glyph, parked to the right of the big indoor
+     * temp. lbl_temp is at CENTER (0, 45) with the 96-pt font, so its right
+     * edge sits ~95 px right of centre; the icon (32 wide) at +135 leaves
+     * a clean gap. y matches the temp baseline. */
+    dim_img_flame = lv_img_create(scr_root);
+    lv_img_set_src(dim_img_flame, &icon_radiator);
+    lv_img_set_zoom(dim_img_flame, 256);
+    lv_obj_set_style_img_recolor(dim_img_flame, lv_color_hex(0xff8866), 0);
+    lv_obj_set_style_img_recolor_opa(dim_img_flame, 255, 0);
+    lv_obj_align(dim_img_flame, LV_ALIGN_CENTER, 145, 45);
+    lv_obj_add_flag(dim_img_flame, LV_OBJ_FLAG_HIDDEN);
 
     dim_img_faucet = lv_img_create(scr_root);
     lv_img_set_src(dim_img_faucet, &icon_faucet);
     lv_img_set_zoom(dim_img_faucet, 256);
     lv_obj_set_style_img_recolor(dim_img_faucet, lv_color_hex(0xcccccc), 0);
     lv_obj_set_style_img_recolor_opa(dim_img_faucet, 255, 0);
-    lv_obj_align(dim_img_faucet, LV_ALIGN_CENTER, -20, 225);
+    lv_obj_align(dim_img_faucet, LV_ALIGN_CENTER, 140, 35);
     lv_obj_add_flag(dim_img_faucet, LV_OBJ_FLAG_HIDDEN);
 
     dim_img_drop = lv_img_create(scr_root);
@@ -284,8 +375,38 @@ lv_obj_t * screen_dim_create(void) {
     lv_img_set_zoom(dim_img_drop, 256);
     lv_obj_set_style_img_recolor(dim_img_drop, lv_color_hex(0x66bbff), 0);
     lv_obj_set_style_img_recolor_opa(dim_img_drop, 255, 0);
-    lv_obj_align(dim_img_drop, LV_ALIGN_CENTER, 18, 235);
+    lv_obj_align(dim_img_drop, LV_ALIGN_CENTER, 158, 55);
     lv_obj_add_flag(dim_img_drop, LV_OBJ_FLAG_HIDDEN);
+
+    /* Vent — small fan icon top-RIGHT (mirrors the waste icon on top-LEFT)
+       with the actual ExhFanSpeed % below. Spin animation tracks % so
+       the user can read at-a-glance whether the unit is idling or
+       blasting. Hidden when the Itho bridge isn't reachable. */
+    dim_vent_fan = lv_img_create(scr_root);
+    lv_img_set_src(dim_vent_fan, &icon_fan);
+    /* icon_fan is large (~96px); scale down for the dim chrome row. */
+    lv_img_set_zoom(dim_vent_fan, 128);
+    lv_obj_set_style_img_recolor(dim_vent_fan, lv_color_hex(0xbbbbbb), 0);
+    lv_obj_set_style_img_recolor_opa(dim_vent_fan, 255, 0);
+    /* Set pivot to center so rotation looks natural — has to be set
+       AFTER the source is bound. icon_fan is 80×80 native (not 128 like
+       the original comment claimed — wrong pivot made the icon orbit a
+       point 24px off-centre, which is what "spinner acting weird" was). */
+    lv_img_set_pivot(dim_vent_fan, 40, 40);
+    /* Mirror the radiator+flame at (+145, +45): vent indicator sits to the
+     * LEFT of the big indoor temp at the same offset. Label tucks under it
+     * so the preset/% stays glanceable without crowding the temp row. */
+    lv_obj_align(dim_vent_fan, LV_ALIGN_CENTER, -145, 45);
+    lv_obj_add_flag(dim_vent_fan, LV_OBJ_FLAG_HIDDEN);
+
+    dim_vent_lbl = lv_label_create(scr_root);
+    lv_obj_set_style_text_color(dim_vent_lbl, lv_color_hex(0xbbbbbb), 0);
+    lv_obj_set_style_text_font(dim_vent_lbl, &lv_font_montserrat_18, 0);
+    lv_label_set_text(dim_vent_lbl, "-- %");
+    lv_obj_set_style_text_align(dim_vent_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(dim_vent_lbl, 120);
+    lv_obj_align(dim_vent_lbl, LV_ALIGN_CENTER, -205, 85);
+    lv_obj_add_flag(dim_vent_lbl, LV_OBJ_FLAG_HIDDEN);
 
     /* Weather icon (large, top-right) + outside temp underneath.
        Visibility is gated by settings.show_dim_weather in refresh_cb. */

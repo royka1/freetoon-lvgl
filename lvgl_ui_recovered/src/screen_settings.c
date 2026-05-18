@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -43,6 +44,7 @@ static lv_obj_t * sl_timeout,  * lbl_timeout_val;
 static lv_obj_t * sl_act,      * lbl_act_val;
 static lv_obj_t * sl_dim,      * lbl_dim_val;
 static lv_obj_t * sw_dim_wx;
+static lv_obj_t * sl_forecast_mode, * lbl_forecast_mode;
 static lv_obj_t * sw_dim_waste;
 static lv_obj_t * sl_waste_lead, * lbl_waste_lead;
 static lv_obj_t * sl_offset,   * lbl_offset_val;
@@ -59,6 +61,16 @@ static void on_enable_change(lv_event_t * e) {
 }
 static void on_dim_wx_change(lv_event_t * e) {
     settings.show_dim_weather = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+}
+static const char * forecast_mode_label(int m) {
+    if (m == FORECAST_HOURLY) return "always hourly";
+    if (m == FORECAST_DAILY)  return "always daily";
+    return "auto (hourly if available)";
+}
+static void on_forecast_mode_change(lv_event_t * e) {
+    int v = lv_slider_get_value(lv_event_get_target(e));
+    settings.forecast_mode = v;
+    lv_label_set_text(lbl_forecast_mode, forecast_mode_label(v));
 }
 static void on_dim_waste_change(lv_event_t * e) {
     settings.show_dim_waste = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
@@ -362,9 +374,20 @@ static void open_display_modal(lv_event_t * e) {
 
 static void open_weather_modal(lv_event_t * e) {
     (void)e;
-    lv_obj_t * p = modal_open("Weather", 220);
-    lv_obj_t * r = panel_row(p, 70, "Show weather on dim screen", NULL);
+    lv_obj_t * p = modal_open("Weather", 310);
+    int y = 70;
+
+    lv_obj_t * r = panel_row(p, y, "Show weather on dim screen", NULL);
     sw_dim_wx = row_switch(r, settings.show_dim_weather, on_dim_wx_change);
+    y += 82;
+
+    /* 3-position slider: 0=auto, 1=hourly, 2=daily. Current label updates
+       in-place via on_forecast_mode_change. */
+    r = panel_row(p, y, "Forecast strip", &lbl_forecast_mode);
+    lv_label_set_text(lbl_forecast_mode,
+                      forecast_mode_label(settings.forecast_mode));
+    sl_forecast_mode = row_slider(r, 0, 2, settings.forecast_mode,
+                                  on_forecast_mode_change);
 }
 
 static void open_waste_modal(lv_event_t * e) {
@@ -471,6 +494,550 @@ static void open_about_modal(lv_event_t * e) {
     modal_timer = lv_timer_create(modal_timer_cb, 1000, NULL);
 }
 
+/* ============================ OT Bridge modal ============================ *
+ *
+ * Lets the user toggle between the two heating-control topologies:
+ *
+ *   Keteladapter (wired)   — happ_thermstat speaks Quby directly to the
+ *                            keteladapter on /dev/ttymxc0; keteladapter is
+ *                            wired into OTGW T-side; OTGW relays in GW=1.
+ *                            Currently the ONLY proven-working topology.
+ *
+ *   OTGW (wireless)        — quby_bridge bind-mounts a PTY over /dev/ttymxc0,
+ *                            intercepts happ_thermstat's Quby frames, and
+ *                            forwards OT writes to OTGW via HTTP. Removes
+ *                            the need for OT wires keteladapter↔OTGW.
+ *                            Boot-handshake mismatch on Subscribe/Enable
+ *                            opcodes — not yet usable.
+ *
+ * Apply rewrites /etc/inittab + kicks quby_bridge / happ_thermstat.
+ * Reads/writes settings via the existing settings.[ch] machinery.
+ *
+ * Test + Check buttons call OTGW HTTP from a detached thread so LVGL
+ * stays responsive while curl runs. */
+
+#include <sys/wait.h>
+
+/* Modal widget pointers (re-used per modal open). */
+static lv_obj_t * ta_otgw_host;
+static lv_obj_t * ta_otgw_user;
+static lv_obj_t * ta_otgw_pass;
+static lv_obj_t * lbl_otmode;
+static lv_obj_t * lbl_test_result;
+static lv_obj_t * lbl_check_result;
+static lv_obj_t * lbl_ket_result;
+static lv_obj_t * lbl_apply_warning;
+
+/* Latest async-test results (set by background thread, read by ui timer). */
+static char       g_test_result_buf[200]  = "";
+static char       g_check_result_buf[200] = "";
+static char       g_ket_result_buf[256]   = "";
+static volatile int g_test_pending  = 0;
+static volatile int g_check_pending = 0;
+static volatile int g_ket_pending   = 0;
+
+/* Spawn an HTTP request via popen+curl. Returns 0 on HTTP 2xx with body in
+ * `out`, -1 otherwise. Mirrors homeassistant.c's helper to avoid a libcurl
+ * link dep. */
+static int otgw_http_call(const char * method, const char * path,
+                          const char * body, char * out, size_t outsz) {
+    char host[80], cmd[1024], auth[160] = "";
+    snprintf(host, sizeof(host), "%s", settings.otgw_host);
+    if (!host[0]) snprintf(host, sizeof(host), "192.168.99.21");
+    if (settings.otgw_user[0]) {
+        snprintf(auth, sizeof(auth), "-u %s:%s ",
+                 settings.otgw_user, settings.otgw_pass);
+    }
+    if (body) {
+        snprintf(cmd, sizeof(cmd),
+            "/usr/bin/curl -s --max-time 5 --connect-timeout 3 %s"
+            "-X %s -H 'Content-Type: application/json' "
+            "--data '%s' 'http://%s%s' 2>&1",
+            auth, method, body, host, path);
+    } else {
+        snprintf(cmd, sizeof(cmd),
+            "/usr/bin/curl -s --max-time 5 --connect-timeout 3 %s"
+            "-X %s 'http://%s%s' 2>&1",
+            auth, method, host, path);
+    }
+    FILE * f = popen(cmd, "r");
+    if (!f) { snprintf(out, outsz, "popen failed"); return -1; }
+    size_t n = fread(out, 1, outsz - 1, f);
+    out[n] = 0;
+    int rc = pclose(f);
+    return (rc == 0 && n > 0) ? 0 : -1;
+}
+
+static void * test_thread(void * arg) {
+    (void)arg;
+    char buf[256];
+    int rc = otgw_http_call("POST", "/api/v0/otgw/command",
+                            "{\"command\":\"PR=A\"}", buf, sizeof(buf));
+    /* Trim to first 120 chars + strip newlines */
+    for (char * p = buf; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
+    if (rc == 0)
+        snprintf(g_test_result_buf, sizeof(g_test_result_buf),
+                 "OK: %.140s", buf);
+    else
+        snprintf(g_test_result_buf, sizeof(g_test_result_buf),
+                 "FAIL: %.140s", buf);
+    g_test_pending = 1;
+    return NULL;
+}
+
+static void * check_thread(void * arg) {
+    (void)arg;
+    char buf[2048];
+    int rc = otgw_http_call("GET", "/api/v0/settings", NULL, buf, sizeof(buf));
+    if (rc != 0) {
+        snprintf(g_check_result_buf, sizeof(g_check_result_buf),
+                 "FAIL: settings endpoint unreachable");
+        g_check_pending = 1; return NULL;
+    }
+    /* Look for `"otgwcommands","value":"..."` substring */
+    const char * needle = "\"otgwcommands\",\"value\":\"";
+    const char * p = strstr(buf, needle);
+    char gw_value[64] = "";
+    if (p) {
+        p += strlen(needle);
+        const char * e = strchr(p, '"');
+        if (e && e - p < (int)sizeof(gw_value) - 1) {
+            size_t L = e - p;
+            memcpy(gw_value, p, L); gw_value[L] = 0;
+        }
+    }
+    if (!gw_value[0]) {
+        snprintf(g_check_result_buf, sizeof(g_check_result_buf),
+                 "WARN: otgwcommands setting not found in response");
+    } else if (strstr(gw_value, "GW=1")) {
+        snprintf(g_check_result_buf, sizeof(g_check_result_buf),
+                 "OK: %s (gateway/relay — correct for wired mode)", gw_value);
+    } else if (strstr(gw_value, "GW=2")) {
+        snprintf(g_check_result_buf, sizeof(g_check_result_buf),
+                 "INFO: %s (no-thermostat mode — needed for wireless mode)", gw_value);
+    } else if (strstr(gw_value, "GW=0")) {
+        snprintf(g_check_result_buf, sizeof(g_check_result_buf),
+                 "WARN: %s (monitor-only — won't drive boiler)", gw_value);
+    } else {
+        snprintf(g_check_result_buf, sizeof(g_check_result_buf),
+                 "INFO: otgwcommands=\"%s\"", gw_value);
+    }
+    g_check_pending = 1;
+    return NULL;
+}
+
+static void on_test_click(lv_event_t * e) {
+    (void)e;
+    lv_label_set_text(lbl_test_result, "Testing…");
+    pthread_t t;
+    if (pthread_create(&t, NULL, test_thread, NULL) == 0) pthread_detach(t);
+}
+
+/* Keteladapter (wired path) test. Verifies the
+ * happ_thermstat ↔ /dev/ttymxc0 ↔ keteladapter chain by:
+ *   - GET localhost:10080/happ_thermstat?action=getThermostatInfo
+ *   - Checking the freshness/sanity of values that only populate when the
+ *     adapter is actively talking OT:
+ *       * currentTemp in (5..40)°C        → ambient sensor read OK
+ *       * currentInternalBoilerSetpoint   → derived from stooklijn + OT slave-info;
+ *                                           0 or absurd = no OT data flowing
+ *       * burnerInfo != -1                → -1 means "no slave-status ever received"
+ *       * otCommError                     → patched to 0; if non-zero anyway → real problem
+ *
+ * If the read fails, happ_thermstat is dead or /dev/ttymxc0 is locked
+ * elsewhere (e.g. quby_bridge bind-mount in wireless mode while it's
+ * mid-handshake).
+ *
+ * This is the wired-mode counterpart of the OTGW Test button; together
+ * they cover both topologies. */
+static void * ket_thread(void * arg) {
+    (void)arg;
+    char buf[2048];
+    FILE * f = popen(
+        "/usr/bin/curl -s --max-time 4 --connect-timeout 2 "
+        "'http://localhost:10080/happ_thermstat?action=getThermostatInfo' 2>&1",
+        "r");
+    if (!f) {
+        snprintf(g_ket_result_buf, sizeof(g_ket_result_buf),
+                 "FAIL: cannot exec curl");
+        g_ket_pending = 1; return NULL;
+    }
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = 0;
+    int rc = pclose(f);
+    if (rc != 0 || n == 0) {
+        snprintf(g_ket_result_buf, sizeof(g_ket_result_buf),
+                 "FAIL: happ_thermstat HTTP unreachable (rc=%d)", rc);
+        g_ket_pending = 1; return NULL;
+    }
+    /* Pull the key fields out of the flat JSON. */
+    int    burner_info = -99;
+    int    ot_err      = -99;
+    int    boil_sp     = -99;
+    double room_c      = -99.0;
+    const char * p;
+    if ((p = strstr(buf, "\"currentTemp\":\""))) room_c = atoi(p + 15) / 100.0;
+    if ((p = strstr(buf, "\"burnerInfo\":\""))) burner_info = atoi(p + 14);
+    if ((p = strstr(buf, "\"otCommError\":\""))) ot_err = atoi(p + 15);
+    if ((p = strstr(buf, "\"currentInternalBoilerSetpoint\":\"")))
+        boil_sp = atoi(p + 33);
+
+    /* Mode-aware analysis: in off/proxy mode (keteladapter is real OT
+     * master) expect REAL OT data; in wireless mode the keteladapter
+     * isn't in the loop so don't fail on absent burnerInfo. */
+    int wired = strcmp(settings.ot_bridge_mode, "wireless") != 0;
+    int ok = 1;
+    char detail[200];
+    snprintf(detail, sizeof(detail),
+             "room=%.2fC burner=%d boilerSP=%d otErr=%d",
+             room_c, burner_info, boil_sp, ot_err);
+    if (room_c < 5.0 || room_c > 40.0) {
+        ok = 0;
+        snprintf(g_ket_result_buf, sizeof(g_ket_result_buf),
+                 "FAIL: ambient sensor reads %.2fC (out of 5-40 range). %s",
+                 room_c, detail);
+    } else if (wired && burner_info == -1) {
+        ok = 0;
+        snprintf(g_ket_result_buf, sizeof(g_ket_result_buf),
+                 "FAIL: burnerInfo=-1 (no OT slave-status received). "
+                 "Check OT wires keteladapter<->OTGW polarity. %s", detail);
+    } else if (ot_err > 0) {
+        ok = 0;
+        snprintf(g_ket_result_buf, sizeof(g_ket_result_buf),
+                 "FAIL: otCommError=%d (active OT fault). %s",
+                 ot_err, detail);
+    }
+    if (ok) {
+        snprintf(g_ket_result_buf, sizeof(g_ket_result_buf),
+                 "OK: keteladapter responding. %s", detail);
+    }
+    g_ket_pending = 1;
+    return NULL;
+}
+
+static void on_ket_click(lv_event_t * e) {
+    (void)e;
+    lv_label_set_text(lbl_ket_result, "Testing keteladapter…");
+    pthread_t t;
+    if (pthread_create(&t, NULL, ket_thread, NULL) == 0) pthread_detach(t);
+}
+
+static void on_check_click(lv_event_t * e) {
+    (void)e;
+    lv_label_set_text(lbl_check_result, "Querying OTGW…");
+    pthread_t t;
+    if (pthread_create(&t, NULL, check_thread, NULL) == 0) pthread_detach(t);
+}
+
+/* Three mode-pick buttons; pointers cached so the click handler can update
+ * their "checked" highlight state. The actual destructive mode-swap runs
+ * on Apply, not on tap — taps just record the *intended* mode + repaint.
+ * We also cache each button's label child because lv_btn doesn't propagate
+ * style changes to its label (the label needs its own style update). */
+static lv_obj_t * btn_off  = NULL;
+static lv_obj_t * btn_proxy = NULL;
+static lv_obj_t * btn_wireless = NULL;
+static lv_obj_t * lbl_off  = NULL;
+static lv_obj_t * lbl_proxy = NULL;
+static lv_obj_t * lbl_wireless = NULL;
+
+static const char * mode_label(const char * m) {
+    /* Hyphens (not em-dashes): Montserrat at this size lacks the em-dash
+     * glyph and would render it as a missing-glyph square. */
+    if (strcmp(m, "off")      == 0) return "Off - keteladapter direct, no bridge";
+    if (strcmp(m, "wireless") == 0) return "Wireless - bridge fakes Quby, OTGW drives boiler";
+    return                             "Proxy - bridge sniffs Quby, native heat path preserved";
+}
+
+static void paint_mode_buttons(void) {
+    const struct { lv_obj_t * b; lv_obj_t * lbl; const char * mode; } items[] = {
+        { btn_off,      lbl_off,      "off" },
+        { btn_proxy,    lbl_proxy,    "proxy" },
+        { btn_wireless, lbl_wireless, "wireless" },
+    };
+    for (unsigned i = 0; i < sizeof items / sizeof items[0]; i++) {
+        if (!items[i].b) continue;
+        int active = strcmp(settings.ot_bridge_mode, items[i].mode) == 0;
+        /* Force opacity so theme defaults don't fight us. */
+        lv_obj_set_style_bg_opa(items[i].b, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(items[i].b,
+            lv_color_hex(active ? 0x3a6090 : 0x1a2a44), 0);
+        /* Label text color lives on the LABEL, not the button — lv_btn
+         * doesn't propagate text styles to its children. */
+        if (items[i].lbl) {
+            lv_obj_set_style_text_color(items[i].lbl,
+                lv_color_hex(active ? 0xffffff : 0x88aabb), 0);
+        }
+        /* Belt-and-braces: mark dirty so LVGL repaints at next refresh. */
+        lv_obj_invalidate(items[i].b);
+    }
+}
+
+static void set_mode_and_repaint(const char * m) {
+    snprintf(settings.ot_bridge_mode, sizeof(settings.ot_bridge_mode), "%s", m);
+    lv_label_set_text(lbl_otmode, mode_label(m));
+    paint_mode_buttons();
+    lv_label_set_text(lbl_apply_warning,
+        "Tap Apply to write inittab + restart bridge/thermstat.\n"
+        "Heat will be off for ~10-15s during the switch.");
+    /* OTGW host/user/pass only meaningful for proxy + wireless (both talk
+     * to OTGW). Off mode doesn't need them but no harm keeping editable. */
+    int needs_otgw = strcmp(m, "off") != 0;
+    if (needs_otgw) {
+        lv_obj_clear_state(ta_otgw_host, LV_STATE_DISABLED);
+        lv_obj_clear_state(ta_otgw_user, LV_STATE_DISABLED);
+        lv_obj_clear_state(ta_otgw_pass, LV_STATE_DISABLED);
+    } else {
+        lv_obj_add_state(ta_otgw_host, LV_STATE_DISABLED);
+        lv_obj_add_state(ta_otgw_user, LV_STATE_DISABLED);
+        lv_obj_add_state(ta_otgw_pass, LV_STATE_DISABLED);
+    }
+}
+
+static void on_mode_off_click(lv_event_t * e)      { (void)e; set_mode_and_repaint("off"); }
+static void on_mode_proxy_click(lv_event_t * e)    { (void)e; set_mode_and_repaint("proxy"); }
+static void on_mode_wireless_click(lv_event_t * e) { (void)e; set_mode_and_repaint("wireless"); }
+
+static void on_apply_click(lv_event_t * e) {
+    (void)e;
+    /* Persist text-area edits into settings before applying. */
+    const char * h = lv_textarea_get_text(ta_otgw_host);
+    const char * u = lv_textarea_get_text(ta_otgw_user);
+    const char * p = lv_textarea_get_text(ta_otgw_pass);
+    snprintf(settings.otgw_host, sizeof(settings.otgw_host), "%s", h ? h : "");
+    snprintf(settings.otgw_user, sizeof(settings.otgw_user), "%s", u ? u : "");
+    snprintf(settings.otgw_pass, sizeof(settings.otgw_pass), "%s", p ? p : "");
+    settings_save();
+
+    /* Apply mode switch via shell. We shell out because rewriting inittab
+     * + pkill + umount is messy to do via syscalls. The script lives at
+     * /mnt/data/ot_mode_switch.sh and accepts off|proxy|wireless. */
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+        "/mnt/data/ot_mode_switch.sh %s >> /tmp/ot_mode_switch.log 2>&1 &",
+        settings.ot_bridge_mode);
+    system(cmd);
+    lv_label_set_text(lbl_apply_warning,
+        "Applied — bridge/thermstat restarting. "
+        "Re-open this modal in ~15s to verify.");
+}
+
+/* Per-tick: pick up async test/check results and update the modal labels. */
+static void otbridge_tick(void) {
+    if (g_test_pending) {
+        lv_label_set_text(lbl_test_result, g_test_result_buf);
+        g_test_pending = 0;
+    }
+    if (g_check_pending) {
+        lv_label_set_text(lbl_check_result, g_check_result_buf);
+        g_check_pending = 0;
+    }
+    if (g_ket_pending) {
+        lv_label_set_text(lbl_ket_result, g_ket_result_buf);
+        g_ket_pending = 0;
+    }
+}
+
+static void open_otbridge_modal(lv_event_t * e) {
+    (void)e;
+    /* Sync settings.ot_bridge_mode to whatever is *actually* running before
+     * we paint, so the highlighted button reflects reality (not whatever
+     * was last saved to cfg). Reads /etc/inittab for the qbri line; if
+     * absent we're in `off`, otherwise the `-m <mode>` arg wins. */
+    {
+        FILE * f = fopen("/etc/inittab", "r");
+        const char * detected = "off";
+        char line[256];
+        if (f) {
+            while (fgets(line, sizeof(line), f)) {
+                if (strncmp(line, "qbri:", 5) != 0) continue;
+                if (strstr(line, "-m active"))      detected = "wireless";
+                else if (strstr(line, "-m proxy"))  detected = "proxy";
+                break;
+            }
+            fclose(f);
+        }
+        snprintf(settings.ot_bridge_mode, sizeof(settings.ot_bridge_mode),
+                 "%s", detected);
+    }
+
+    lv_obj_t * p = modal_open("OT Bridge", 600);
+    int y = 70;
+
+    /* Mode picker — 3-way: off / proxy / wireless. */
+    lv_obj_t * mode_lbl = lv_label_create(p);
+    lv_obj_set_style_text_color(mode_lbl, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(mode_lbl, &lv_font_montserrat_22, 0);
+    lv_label_set_text(mode_lbl, "Mode:");
+    lv_obj_align(mode_lbl, LV_ALIGN_TOP_LEFT, 4, y + 12);
+
+    const struct { lv_obj_t ** btn_slot; lv_obj_t ** lbl_slot;
+                   const char * caption;
+                   lv_event_cb_t cb; int x; } picks[] = {
+        { &btn_off,      &lbl_off,      "Off",      on_mode_off_click,      120 },
+        { &btn_proxy,    &lbl_proxy,    "Proxy",    on_mode_proxy_click,    270 },
+        { &btn_wireless, &lbl_wireless, "Wireless", on_mode_wireless_click, 470 },
+    };
+    for (unsigned i = 0; i < sizeof picks / sizeof picks[0]; i++) {
+        lv_obj_t * b = lv_btn_create(p);
+        lv_obj_set_size(b, 140, 50);
+        lv_obj_align(b, LV_ALIGN_TOP_LEFT, picks[i].x, y);
+        lv_obj_set_style_radius(b, 12, 0);
+        lv_obj_add_event_cb(b, picks[i].cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t * l = lv_label_create(b);
+        lv_label_set_text(l, picks[i].caption);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_22, 0);
+        lv_obj_center(l);
+        *picks[i].btn_slot = b;
+        *picks[i].lbl_slot = l;
+    }
+    y += 60;
+
+    /* Mode description (one-liner that flips with the selection). */
+    lbl_otmode = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_otmode, lv_color_hex(0xa8c4dc), 0);
+    lv_obj_set_style_text_font(lbl_otmode, &lv_font_montserrat_18, 0);
+    lv_obj_set_width(lbl_otmode, 560);
+    lv_label_set_long_mode(lbl_otmode, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lbl_otmode, mode_label(settings.ot_bridge_mode));
+    lv_obj_align(lbl_otmode, LV_ALIGN_TOP_LEFT, 4, y);
+    paint_mode_buttons();
+    y += 50;
+
+    /* OTGW host */
+    lv_obj_t * lbl_host = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_host, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_host, &lv_font_montserrat_22, 0);
+    lv_label_set_text(lbl_host, "OTGW host:");
+    lv_obj_align(lbl_host, LV_ALIGN_TOP_LEFT, 4, y);
+    ta_otgw_host = lv_textarea_create(p);
+    lv_obj_set_size(ta_otgw_host, 380, 44);
+    lv_obj_align(ta_otgw_host, LV_ALIGN_TOP_LEFT, 240, y - 4);
+    lv_textarea_set_one_line(ta_otgw_host, true);
+    lv_textarea_set_text(ta_otgw_host, settings.otgw_host);
+    y += 60;
+
+    /* OTGW user/pass */
+    lv_obj_t * lbl_user = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_user, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_user, &lv_font_montserrat_22, 0);
+    lv_label_set_text(lbl_user, "OTGW user (opt):");
+    lv_obj_align(lbl_user, LV_ALIGN_TOP_LEFT, 4, y);
+    ta_otgw_user = lv_textarea_create(p);
+    lv_obj_set_size(ta_otgw_user, 380, 44);
+    lv_obj_align(ta_otgw_user, LV_ALIGN_TOP_LEFT, 240, y - 4);
+    lv_textarea_set_one_line(ta_otgw_user, true);
+    lv_textarea_set_text(ta_otgw_user, settings.otgw_user);
+    y += 60;
+
+    lv_obj_t * lbl_pass = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_pass, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_pass, &lv_font_montserrat_22, 0);
+    lv_label_set_text(lbl_pass, "OTGW pass (opt):");
+    lv_obj_align(lbl_pass, LV_ALIGN_TOP_LEFT, 4, y);
+    ta_otgw_pass = lv_textarea_create(p);
+    lv_obj_set_size(ta_otgw_pass, 380, 44);
+    lv_obj_align(ta_otgw_pass, LV_ALIGN_TOP_LEFT, 240, y - 4);
+    lv_textarea_set_one_line(ta_otgw_pass, true);
+    lv_textarea_set_password_mode(ta_otgw_pass, true);
+    lv_textarea_set_text(ta_otgw_pass, settings.otgw_pass);
+    y += 60;
+
+    /* Enable/disable host/user/pass per current mode */
+    int wireless = strcmp(settings.ot_bridge_mode, "otgw") == 0;
+    if (!wireless) {
+        lv_obj_add_state(ta_otgw_host, LV_STATE_DISABLED);
+        lv_obj_add_state(ta_otgw_user, LV_STATE_DISABLED);
+        lv_obj_add_state(ta_otgw_pass, LV_STATE_DISABLED);
+    }
+
+    /* Buttons row — three OTGW-side buttons */
+    lv_obj_t * b_test = lv_btn_create(p);
+    lv_obj_set_size(b_test, 200, 50);
+    lv_obj_align(b_test, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_obj_set_style_bg_color(b_test, lv_color_hex(0x2a4060), 0);
+    lv_obj_add_event_cb(b_test, on_test_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * b_test_lbl = lv_label_create(b_test);
+    lv_label_set_text(b_test_lbl, "Test OTGW");
+    lv_obj_center(b_test_lbl);
+
+    lv_obj_t * b_check = lv_btn_create(p);
+    lv_obj_set_size(b_check, 220, 50);
+    lv_obj_align(b_check, LV_ALIGN_TOP_LEFT, 218, y);
+    lv_obj_set_style_bg_color(b_check, lv_color_hex(0x2a4060), 0);
+    lv_obj_add_event_cb(b_check, on_check_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * b_check_lbl = lv_label_create(b_check);
+    lv_label_set_text(b_check_lbl, "Check GW mode");
+    lv_obj_center(b_check_lbl);
+
+    lv_obj_t * b_ket = lv_btn_create(p);
+    lv_obj_set_size(b_ket, 220, 50);
+    lv_obj_align(b_ket, LV_ALIGN_TOP_LEFT, 452, y);
+    lv_obj_set_style_bg_color(b_ket, lv_color_hex(0x2a4060), 0);
+    lv_obj_add_event_cb(b_ket, on_ket_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * b_ket_lbl = lv_label_create(b_ket);
+    lv_label_set_text(b_ket_lbl, "Test keteladapter");
+    lv_obj_center(b_ket_lbl);
+    y += 65;
+
+    /* Second button row — just Apply */
+    lv_obj_t * b_apply = lv_btn_create(p);
+    lv_obj_set_size(b_apply, 200, 50);
+    lv_obj_align(b_apply, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_obj_set_style_bg_color(b_apply, lv_color_hex(0x884422), 0);
+    lv_obj_add_event_cb(b_apply, on_apply_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * b_apply_lbl = lv_label_create(b_apply);
+    lv_label_set_text(b_apply_lbl, "Apply mode");
+    lv_obj_center(b_apply_lbl);
+    y += 60;
+
+    /* Result labels stacked below the button rows */
+    lbl_test_result = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_test_result, lv_color_hex(0xa8c4dc), 0);
+    lv_obj_set_style_text_font(lbl_test_result, &lv_font_montserrat_18, 0);
+    lv_label_set_long_mode(lbl_test_result, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(lbl_test_result, 770);
+    lv_obj_align(lbl_test_result, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_label_set_text(lbl_test_result, "OTGW test: (not run)");
+    y += 35;
+
+    lbl_check_result = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_check_result, lv_color_hex(0xa8c4dc), 0);
+    lv_obj_set_style_text_font(lbl_check_result, &lv_font_montserrat_18, 0);
+    lv_obj_set_width(lbl_check_result, 770);
+    lv_label_set_long_mode(lbl_check_result, LV_LABEL_LONG_WRAP);
+    lv_obj_align(lbl_check_result, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_label_set_text(lbl_check_result, "GW mode check: (not run)");
+    y += 35;
+
+    lbl_ket_result = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_ket_result, lv_color_hex(0xa8c4dc), 0);
+    lv_obj_set_style_text_font(lbl_ket_result, &lv_font_montserrat_18, 0);
+    lv_obj_set_width(lbl_ket_result, 770);
+    lv_label_set_long_mode(lbl_ket_result, LV_LABEL_LONG_WRAP);
+    lv_obj_align(lbl_ket_result, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_label_set_text(lbl_ket_result, "Keteladapter test: (not run)");
+    y += 45;
+
+    lbl_apply_warning = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_apply_warning, lv_color_hex(0xcc8866), 0);
+    lv_obj_set_style_text_font(lbl_apply_warning, &lv_font_montserrat_18, 0);
+    lv_label_set_long_mode(lbl_apply_warning, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(lbl_apply_warning, 770);
+    lv_obj_align(lbl_apply_warning, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_label_set_text(lbl_apply_warning,
+        "Apply rewrites /etc/inittab and restarts quby_bridge + happ_thermstat. "
+        "Heat will pause for ~10s during the switch.");
+
+    /* Reset async-result flags so this modal-open starts clean. */
+    g_test_pending = 0;
+    g_check_pending = 0;
+    g_ket_pending = 0;
+
+    modal_tick_fn = otbridge_tick;
+    modal_timer = lv_timer_create(modal_timer_cb, 500, NULL);
+}
+
 /* ============================ landing page ============================ */
 
 static void on_back(lv_event_t * e) { (void)e; ui_pop(); }
@@ -513,6 +1080,330 @@ static void make_tile(int x, int y, const lv_img_dsc_t * icon, const char * sym,
     lv_obj_align(c, LV_ALIGN_BOTTOM_MID, 0, -14);
 }
 
+/* ===================================================================== */
+/* MQTT modal: broker creds + Test + Discover + topic-checklist + Apply  */
+/* ===================================================================== */
+#include "mqtt_client.h"
+
+static lv_obj_t * ta_mqtt_host;
+static lv_obj_t * ta_mqtt_port;
+static lv_obj_t * ta_mqtt_user;
+static lv_obj_t * ta_mqtt_pass;
+static lv_obj_t * lbl_mqtt_result;
+
+/* Up to 32 discovered topics; first 16 rendered as checkboxes in the modal.
+ * Worker thread fills these; LVGL tick pulls them out and (re-)builds the
+ * checkbox column on change. */
+#define MQTT_DISC_CAP 32
+static char     g_disc_topics[MQTT_DISC_CAP][96];
+static int      g_disc_count = 0;
+static volatile int g_disc_dirty = 0;
+static volatile int g_disc_running = 0;
+static volatile int g_test_done = 0;
+static char     g_test_result[160] = "";
+static pthread_mutex_t g_disc_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+/* Checkboxes for the discovered topics — rebuilt by the tick when dirty. */
+static lv_obj_t * cb_topics[16] = {NULL};
+static lv_obj_t * lbl_topics[16] = {NULL};
+static int        cb_count = 0;
+static lv_obj_t * topics_container = NULL;
+
+static int topic_is_subscribed(const char * t) {
+    for (int i = 0; i < settings.mqtt_topic_count; i++)
+        if (!strcmp(settings.mqtt_topics[i], t)) return 1;
+    return 0;
+}
+
+static void mqtt_test_thread_fn(void) { /* not used — kept for symmetry */ }
+
+static void * mqtt_test_thread(void * arg) {
+    (void)arg;
+    char host[64], user[32], pass[64];
+    snprintf(host, sizeof(host), "%s", lv_textarea_get_text(ta_mqtt_host));
+    snprintf(user, sizeof(user), "%s", lv_textarea_get_text(ta_mqtt_user));
+    snprintf(pass, sizeof(pass), "%s", lv_textarea_get_text(ta_mqtt_pass));
+    int port = atoi(lv_textarea_get_text(ta_mqtt_port));
+    char err[128] = "";
+    int rc = mqtt_test_connection(host, port, user, pass, err, sizeof(err));
+    pthread_mutex_lock(&g_disc_mtx);
+    snprintf(g_test_result, sizeof(g_test_result), "%s: %s",
+             rc == 0 ? "OK" : "FAIL", err);
+    g_test_done = 1;
+    pthread_mutex_unlock(&g_disc_mtx);
+    return NULL;
+}
+
+static void on_mqtt_test_click(lv_event_t * e) {
+    (void)e;
+    lv_label_set_text(lbl_mqtt_result, "Testing connection…");
+    pthread_t t;
+    if (pthread_create(&t, NULL, mqtt_test_thread, NULL) == 0) pthread_detach(t);
+}
+
+static void on_disc_topic(const char * topic, void * arg) {
+    (void)arg;
+    pthread_mutex_lock(&g_disc_mtx);
+    for (int i = 0; i < g_disc_count; i++)
+        if (!strcmp(g_disc_topics[i], topic)) { pthread_mutex_unlock(&g_disc_mtx); return; }
+    if (g_disc_count < MQTT_DISC_CAP) {
+        snprintf(g_disc_topics[g_disc_count], sizeof(g_disc_topics[0]), "%s", topic);
+        g_disc_count++;
+        g_disc_dirty = 1;
+    }
+    pthread_mutex_unlock(&g_disc_mtx);
+}
+
+static void * mqtt_discover_thread(void * arg) {
+    (void)arg;
+    char host[64], user[32], pass[64];
+    snprintf(host, sizeof(host), "%s", lv_textarea_get_text(ta_mqtt_host));
+    snprintf(user, sizeof(user), "%s", lv_textarea_get_text(ta_mqtt_user));
+    snprintf(pass, sizeof(pass), "%s", lv_textarea_get_text(ta_mqtt_pass));
+    int port = atoi(lv_textarea_get_text(ta_mqtt_port));
+    pthread_mutex_lock(&g_disc_mtx);
+    g_disc_count = 0; g_disc_dirty = 1;
+    pthread_mutex_unlock(&g_disc_mtx);
+    /* 5 second scan of "#" is enough to catch retained + a couple of
+     * ticks of live traffic on a normal home broker. */
+    int n = mqtt_discover_topics(host, port, user, pass, "#", 5000,
+                                 on_disc_topic, NULL);
+    pthread_mutex_lock(&g_disc_mtx);
+    snprintf(g_test_result, sizeof(g_test_result),
+             n < 0 ? "Discovery failed (check creds/host)"
+                   : "Discovery done: %d topic%s seen",
+             n, n == 1 ? "" : "s");
+    g_test_done = 1;
+    g_disc_running = 0;
+    pthread_mutex_unlock(&g_disc_mtx);
+    return NULL;
+}
+
+static void on_mqtt_discover_click(lv_event_t * e) {
+    (void)e;
+    pthread_mutex_lock(&g_disc_mtx);
+    if (g_disc_running) { pthread_mutex_unlock(&g_disc_mtx); return; }
+    g_disc_running = 1;
+    pthread_mutex_unlock(&g_disc_mtx);
+    lv_label_set_text(lbl_mqtt_result, "Subscribing to # for 5s…");
+    pthread_t t;
+    if (pthread_create(&t, NULL, mqtt_discover_thread, NULL) == 0) pthread_detach(t);
+}
+
+static void rebuild_topic_checkboxes(void) {
+    if (!topics_container) return;
+    /* Wipe existing children. */
+    lv_obj_clean(topics_container);
+    cb_count = 0;
+    int n;
+    pthread_mutex_lock(&g_disc_mtx);
+    n = g_disc_count;
+    if (n > 16) n = 16;
+    /* Snapshot to a local array so we hold the mutex briefly. */
+    char snap[16][96];
+    for (int i = 0; i < n; i++)
+        snprintf(snap[i], sizeof(snap[0]), "%s", g_disc_topics[i]);
+    pthread_mutex_unlock(&g_disc_mtx);
+
+    int y = 0;
+    for (int i = 0; i < n; i++) {
+        lv_obj_t * row = lv_obj_create(topics_container);
+        lv_obj_set_size(row, 760, 36);
+        lv_obj_align(row, LV_ALIGN_TOP_LEFT, 0, y);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        cb_topics[i] = lv_checkbox_create(row);
+        lv_checkbox_set_text(cb_topics[i], "");
+        lv_obj_align(cb_topics[i], LV_ALIGN_LEFT_MID, 0, 0);
+        if (topic_is_subscribed(snap[i]))
+            lv_obj_add_state(cb_topics[i], LV_STATE_CHECKED);
+
+        lbl_topics[i] = lv_label_create(row);
+        lv_obj_set_style_text_color(lbl_topics[i], lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(lbl_topics[i], &lv_font_montserrat_18, 0);
+        lv_label_set_text(lbl_topics[i], snap[i]);
+        lv_obj_align(lbl_topics[i], LV_ALIGN_LEFT_MID, 36, 0);
+
+        y += 38;
+    }
+    cb_count = n;
+}
+
+static void mqtt_tick(void) {
+    if (g_disc_dirty) {
+        g_disc_dirty = 0;
+        rebuild_topic_checkboxes();
+    }
+    if (g_test_done) {
+        g_test_done = 0;
+        char buf[200];
+        pthread_mutex_lock(&g_disc_mtx);
+        snprintf(buf, sizeof(buf), "%s", g_test_result);
+        pthread_mutex_unlock(&g_disc_mtx);
+        if (lbl_mqtt_result) lv_label_set_text(lbl_mqtt_result, buf);
+    }
+}
+
+static void on_mqtt_apply_click(lv_event_t * e) {
+    (void)e;
+    snprintf(settings.mqtt_host, sizeof(settings.mqtt_host),
+             "%s", lv_textarea_get_text(ta_mqtt_host));
+    settings.mqtt_port = atoi(lv_textarea_get_text(ta_mqtt_port));
+    if (settings.mqtt_port == 0) settings.mqtt_port = 1883;
+    snprintf(settings.mqtt_user, sizeof(settings.mqtt_user),
+             "%s", lv_textarea_get_text(ta_mqtt_user));
+    snprintf(settings.mqtt_pass, sizeof(settings.mqtt_pass),
+             "%s", lv_textarea_get_text(ta_mqtt_pass));
+    /* Topic list = the currently-checked checkboxes from the discovered
+     * list. If discovery wasn't run, preserve the existing topics so the
+     * user doesn't accidentally wipe their config by clicking Apply. */
+    if (cb_count > 0) {
+        settings.mqtt_topic_count = 0;
+        for (int i = 0; i < cb_count && settings.mqtt_topic_count < 8; i++) {
+            if (lv_obj_has_state(cb_topics[i], LV_STATE_CHECKED)) {
+                snprintf(settings.mqtt_topics[settings.mqtt_topic_count],
+                         sizeof(settings.mqtt_topics[0]),
+                         "%s", lv_label_get_text(lbl_topics[i]));
+                settings.mqtt_topic_count++;
+            }
+        }
+    }
+    settings_save();
+    /* Also mirror to /mnt/data/mqtt.cfg so external scripts that read it
+     * (none today, future-proofing) stay in sync. */
+    FILE * f = fopen("/mnt/data/mqtt.cfg", "w");
+    if (f) {
+        fprintf(f, "%s:%s:%s\n", settings.mqtt_host, settings.mqtt_user,
+                settings.mqtt_pass);
+        fclose(f); chmod("/mnt/data/mqtt.cfg", 0600);
+    }
+    mqtt_client_restart();
+    lv_label_set_text(lbl_mqtt_result,
+        "Applied — subscriber reconnecting with new settings.");
+}
+
+static void open_mqtt_modal(lv_event_t * e) {
+    (void)e;
+    lv_obj_t * p = modal_open("MQTT", 760);
+    int y = 70;
+
+    /* Host */
+    lv_obj_t * lbl_h = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_h, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_h, &lv_font_montserrat_22, 0);
+    lv_label_set_text(lbl_h, "Broker host:");
+    lv_obj_align(lbl_h, LV_ALIGN_TOP_LEFT, 4, y);
+    ta_mqtt_host = lv_textarea_create(p);
+    lv_obj_set_size(ta_mqtt_host, 380, 44);
+    lv_obj_align(ta_mqtt_host, LV_ALIGN_TOP_LEFT, 240, y - 4);
+    lv_textarea_set_one_line(ta_mqtt_host, true);
+    lv_textarea_set_text(ta_mqtt_host, settings.mqtt_host);
+    /* Port — separate text area on the right */
+    lv_obj_t * lbl_p = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_p, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_p, &lv_font_montserrat_22, 0);
+    lv_label_set_text(lbl_p, "Port:");
+    lv_obj_align(lbl_p, LV_ALIGN_TOP_LEFT, 640, y);
+    ta_mqtt_port = lv_textarea_create(p);
+    lv_obj_set_size(ta_mqtt_port, 100, 44);
+    lv_obj_align(ta_mqtt_port, LV_ALIGN_TOP_LEFT, 720, y - 4);
+    lv_textarea_set_one_line(ta_mqtt_port, true);
+    char portbuf[8]; snprintf(portbuf, sizeof(portbuf), "%d",
+                              settings.mqtt_port ? settings.mqtt_port : 1883);
+    lv_textarea_set_text(ta_mqtt_port, portbuf);
+    y += 60;
+
+    /* User */
+    lv_obj_t * lbl_u = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_u, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_u, &lv_font_montserrat_22, 0);
+    lv_label_set_text(lbl_u, "User (opt):");
+    lv_obj_align(lbl_u, LV_ALIGN_TOP_LEFT, 4, y);
+    ta_mqtt_user = lv_textarea_create(p);
+    lv_obj_set_size(ta_mqtt_user, 380, 44);
+    lv_obj_align(ta_mqtt_user, LV_ALIGN_TOP_LEFT, 240, y - 4);
+    lv_textarea_set_one_line(ta_mqtt_user, true);
+    lv_textarea_set_text(ta_mqtt_user, settings.mqtt_user);
+    y += 60;
+
+    /* Pass */
+    lv_obj_t * lbl_pw = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_pw, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_pw, &lv_font_montserrat_22, 0);
+    lv_label_set_text(lbl_pw, "Pass (opt):");
+    lv_obj_align(lbl_pw, LV_ALIGN_TOP_LEFT, 4, y);
+    ta_mqtt_pass = lv_textarea_create(p);
+    lv_obj_set_size(ta_mqtt_pass, 380, 44);
+    lv_obj_align(ta_mqtt_pass, LV_ALIGN_TOP_LEFT, 240, y - 4);
+    lv_textarea_set_one_line(ta_mqtt_pass, true);
+    lv_textarea_set_password_mode(ta_mqtt_pass, true);
+    lv_textarea_set_text(ta_mqtt_pass, settings.mqtt_pass);
+    y += 60;
+
+    /* Test / Discover / Apply buttons */
+    lv_obj_t * b_test = lv_btn_create(p);
+    lv_obj_set_size(b_test, 220, 50);
+    lv_obj_align(b_test, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_obj_set_style_bg_color(b_test, lv_color_hex(0x2a4060), 0);
+    lv_obj_add_event_cb(b_test, on_mqtt_test_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * bl1 = lv_label_create(b_test);
+    lv_label_set_text(bl1, "Test connection"); lv_obj_center(bl1);
+
+    lv_obj_t * b_disc = lv_btn_create(p);
+    lv_obj_set_size(b_disc, 250, 50);
+    lv_obj_align(b_disc, LV_ALIGN_TOP_LEFT, 240, y);
+    lv_obj_set_style_bg_color(b_disc, lv_color_hex(0x2a4060), 0);
+    lv_obj_add_event_cb(b_disc, on_mqtt_discover_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * bl2 = lv_label_create(b_disc);
+    lv_label_set_text(bl2, "Discover topics (5s)"); lv_obj_center(bl2);
+
+    lv_obj_t * b_apply = lv_btn_create(p);
+    lv_obj_set_size(b_apply, 200, 50);
+    lv_obj_align(b_apply, LV_ALIGN_TOP_LEFT, 500, y);
+    lv_obj_set_style_bg_color(b_apply, lv_color_hex(0xc06030), 0);
+    lv_obj_add_event_cb(b_apply, on_mqtt_apply_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * bl3 = lv_label_create(b_apply);
+    lv_label_set_text(bl3, "Apply + restart"); lv_obj_center(bl3);
+    y += 60;
+
+    /* Result line */
+    lbl_mqtt_result = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_mqtt_result, lv_color_hex(0xa8c4dc), 0);
+    lv_obj_set_style_text_font(lbl_mqtt_result, &lv_font_montserrat_18, 0);
+    lv_obj_set_width(lbl_mqtt_result, 770);
+    lv_label_set_long_mode(lbl_mqtt_result, LV_LABEL_LONG_WRAP);
+    lv_obj_align(lbl_mqtt_result, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_label_set_text(lbl_mqtt_result, "Ready. Test the broker or hit Discover.");
+    y += 40;
+
+    /* Discovered-topic checklist container — scrollable column */
+    topics_container = lv_obj_create(p);
+    lv_obj_set_size(topics_container, 770, 280);
+    lv_obj_align(topics_container, LV_ALIGN_TOP_LEFT, 4, y);
+    lv_obj_set_style_bg_opa(topics_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(topics_container, 0, 0);
+    lv_obj_set_style_pad_all(topics_container, 0, 0);
+    cb_count = 0;
+    /* Pre-populate the checklist with the currently-subscribed topics so
+     * the user sees them before clicking Discover. */
+    pthread_mutex_lock(&g_disc_mtx);
+    g_disc_count = 0;
+    for (int i = 0; i < settings.mqtt_topic_count && i < MQTT_DISC_CAP; i++) {
+        if (!settings.mqtt_topics[i][0]) continue;
+        snprintf(g_disc_topics[g_disc_count++],
+                 sizeof(g_disc_topics[0]), "%s", settings.mqtt_topics[i]);
+    }
+    g_disc_dirty = 1;
+    pthread_mutex_unlock(&g_disc_mtx);
+
+    /* Hook the 1s modal timer so we can pick up async worker results. */
+    modal_tick_fn = mqtt_tick;
+    modal_timer = lv_timer_create(modal_timer_cb, 500, NULL);
+}
+
 lv_obj_t * screen_settings_create(void) {
     if (scr_root) return scr_root;
 
@@ -540,18 +1431,25 @@ lv_obj_t * screen_settings_create(void) {
     lv_label_set_text(title, "Settings");
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 180, 30);
 
-    /* 5 category tiles — 3 on top, 2 below */
-    int x0 = 25, gap = 22, row1 = 120, row2 = 326;
+    /* 7 category tiles. About moves to row3 left to keep its info on screen
+     * without overlapping rows 1-2 (each tile is 188px tall, row2 ends
+     * at y=514, so row3 at y=520 ends at y=708 — partially off-screen,
+     * but only the bottom 108px of About is clipped which is acceptable
+     * since it's a label-only diagnostic page; users tap title area). */
+    int x0 = 25, gap = 22, row1 = 120, row2 = 326, row3 = 520;
     make_tile(x0 + 0*(308+gap), row1, &icon_wx_cloud, NULL, "Display",
               "dim, timeout, brightness", open_display_modal);
-    /* Display has no icon source — use a symbol instead (override above) */
     make_tile(x0 + 1*(308+gap), row1, &icon_wx_cloud, NULL, "Weather",
               "weather on dim screen", open_weather_modal);
     make_tile(x0 + 2*(308+gap), row1, &icon_trash, NULL, "Waste",
               "pickup alerts on dim", open_waste_modal);
     make_tile(x0 + 0*(308+gap), row2, &icon_flame, NULL, "Heating",
               "temp offset, boiler type", open_heating_modal);
-    make_tile(x0 + 1*(308+gap), row2, NULL, LV_SYMBOL_LIST, "About",
+    make_tile(x0 + 1*(308+gap), row2, NULL, LV_SYMBOL_GPS, "OT Bridge",
+              "off / proxy / wireless", open_otbridge_modal);
+    make_tile(x0 + 2*(308+gap), row2, NULL, LV_SYMBOL_WIFI, "MQTT",
+              "broker + topics", open_mqtt_modal);
+    make_tile(x0 + 0*(308+gap), row3, NULL, LV_SYMBOL_LIST, "About",
               "status & diagnostics", open_about_modal);
 
     return scr_root;

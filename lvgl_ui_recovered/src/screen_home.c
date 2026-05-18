@@ -13,6 +13,8 @@
 #include "weather.h"
 #include "wastecollection.h"
 #include "ventilation.h"
+#include "homeassistant.h"
+#include "packages.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -251,27 +253,50 @@ static void on_vent_bump(lv_event_t * e) {
     vent_bump_speed((int)d);
 }
 
+/* Forward-declared here because on_vent_mode (next) writes to it but the
+ * full set of vent statics below also references it from the timer handler.
+ * See the 90-s window logic in refresh_cb's src_tag branch. */
+static uint32_t   vent_local_press_ms = 0;
+
 /* The remaining corner buttons send virtual-remote commands directly.
  * user_data is a literal C string (low/high/auto). The async send keeps
  * the LVGL event loop snappy — the HTTP roundtrip used to block ~1 s. */
 static void on_vent_mode(lv_event_t * e) {
     const char * cmd = (const char *)lv_event_get_user_data(e);
-    if (cmd) vent_send_vremote_async(cmd);
+    if (cmd) {
+        vent_local_press_ms = lv_tick_get();
+        vent_send_vremote_async(cmd);
+    }
 }
 
-/* The Low/High pair collapsed into a single switch:
- *   off (left)  → vremotecmd=low
- *   on  (right) → vremotecmd=high
- * A small "Low/High" label sits above so the meaning is obvious. */
-static void on_vent_switch(lv_event_t * e) {
-    lv_obj_t * sw = lv_event_get_target(e);
-    int checked = lv_obj_has_state(sw, LV_STATE_CHECKED);
-    vent_send_vremote_async(checked ? "high" : "low");
-}
+/* Low/High are back as discrete corner buttons; the switch flip-flopped
+ * on each refresh when sync'd to fan_info, and "Auto" / "Timer" don't map
+ * onto a 2-position toggle anyway. The buttons reuse on_vent_mode with
+ * cmd="low" / "high". */
+
+/* --- Curtains tile (talks to HA via REST in homeassistant.c) ---
+ * lbl_curtain_state is updated from refresh_cb; the 3 button handlers
+ * fire off async open/close/stop calls.
+ *
+ * curt_spinner is an lv_spinner that's only visible while ha_state.
+ * curtain_state ∈ {"opening","closing"}. curt_bar is a position bar
+ * (0..100) so the user can see at a glance how open the curtain is. */
+static lv_obj_t * lbl_curtain_state = NULL;
+static lv_obj_t * curt_spinner      = NULL;
+static lv_obj_t * curt_bar          = NULL;
+static void on_curt_open (lv_event_t * e) { (void)e; ha_curtain_open_async();  }
+static void on_curt_close(lv_event_t * e) { (void)e; ha_curtain_close_async(); }
+static void on_curt_stop (lv_event_t * e) { (void)e; ha_curtain_stop_async();  }
 
 /* Timer button cycles 10 → 20 → 30 → off and updates its own label.
  * "off" maps to vremotecmd=auto (the most natural resting state). */
 static lv_obj_t * vent_timer_lbl = NULL;
+/* Vent preset buttons — refs kept so refresh_cb can highlight the one that
+ * matches vent_state.fan_info (white outline = currently active preset). */
+static lv_obj_t * vent_btn_low   = NULL;
+static lv_obj_t * vent_btn_high  = NULL;
+static lv_obj_t * vent_btn_auto  = NULL;
+static lv_obj_t * vent_btn_timer = NULL;
 static int        vent_timer_step = 0;
 static void on_vent_timer(lv_event_t * e) {
     (void)e;
@@ -284,6 +309,7 @@ static void on_vent_timer(lv_event_t * e) {
         default: cmd = "auto";   label = "Timer"; vent_timer_step = 0; break;
     }
     if (vent_timer_lbl) lv_label_set_text(vent_timer_lbl, label);
+    vent_local_press_ms = lv_tick_get();
     vent_send_vremote_async(cmd);
 }
 
@@ -292,24 +318,32 @@ static void on_vent_timer(lv_event_t * e) {
 static void vent_fan_anim_cb(void * obj, int32_t v) {
     lv_img_set_angle((lv_obj_t *)obj, v);
 }
-static void vent_apply_fan_anim(int pct) {
+static void vent_apply_fan_anim(int rpm) {
     if (!vent_fan_img) return;
-    /* Fan effectively off below ~3%: stop the animation entirely so the
-       icon parks at its current angle instead of spinning misleadingly. */
-    if (pct < 3) {
-        if (vent_anim_period_ms == 0) return;     /* already stopped */
+    /* Drive the spin off rpm — the only signal that's actually physical on
+       this unit. Itho's ExhFanSpeed (%) is broken (Error:16, stuck at 0 in
+       High) AND its "Low" button can produce higher rpm than "High", so
+       any percentage-derived rate gives the wrong visual.
+
+       Park the icon below 50 rpm (fan off / coasting down). */
+    if (rpm < 50) {
+        if (vent_anim_period_ms == 0) return;
         vent_anim_period_ms = 0;
         lv_anim_del(vent_fan_img, NULL);
         return;
     }
-    /* Linear: 600ms/turn at 100% → 3000ms/turn at ~5%. The on-screen
-       sweep can't match real fan rpm (a 3000-rpm fan is 50 turns/sec —
-       a flicker) but the *relative* speed should track ExhFanSpeed so
-       100% feels meaningfully faster than 25%. */
-    int period = 600 + (100 - pct) * 24;
-    if (period < 400)  period = 400;
-    if (period > 3000) period = 3000;
-    if (period == vent_anim_period_ms) return;
+    /* Linear rpm → ms/turn: faster fan = shorter period. Clamped to a
+       visually-perceptible range. Empirical anchors on this Itho:
+         ~700 rpm (FanInfo=high)  → ~2.8 s/turn — slow but visible
+         ~2500 rpm (FanInfo=low)  → ~1.0 s/turn — clearly faster
+         3500+ rpm (boost)        →  ~0.2 s/turn — blur */
+    int period = 3500 - rpm;
+    if (period < 200)  period = 200;
+    if (period > 3500) period = 3500;
+    /* Hysteresis: rpm jitters ±1 every 8 s poll. Without this every poll
+       would lv_anim_del + restart the spin, snapping the icon back to 0°
+       (visible glitch — that's what "spinner acting weird" actually was). */
+    if (abs(period - vent_anim_period_ms) < 100) return;
     vent_anim_period_ms = period;
     lv_anim_del(vent_fan_img, NULL);
     lv_anim_t a;
@@ -504,22 +538,129 @@ static void refresh_cb(lv_timer_t * t) {
     if (lbl_energy_gas && hw_state.connected_p1)
         lv_label_set_text_fmt(lbl_energy_gas, "%.0f m3 gas", hw_state.gas_m3);
 
-    /* Vent tile: setpoint % above, fan rpm below, spinning fan icon centre. */
+    /* Vent tile. Top-right line combines preset + remaining ("Auto", "High",
+       "Timer 25m"); bottom line combines % + rpm + source ("100 % · 695 rpm
+       · vremote"). All four physical signals (preset/pct/rpm/who) on two
+       label widgets so the tile stays uncluttered. */
     if (lbl_boiler_state) {
-        if (vent_state.connected)
-            lv_label_set_text_fmt(lbl_boiler_state, "%d %%", vent_state.speed_pct);
-        else
-            lv_label_set_text(lbl_boiler_state, "-- %");
+        if (vent_state.connected) {
+            /* Same snapshot trick as last_source — fan_info is a non-
+             * volatile char[] written by another thread; memcpy a local
+             * copy each refresh to dodge stale-cache reads. */
+            char fi_local[16];
+            memcpy(fi_local, (const char *)vent_state.fan_info,
+                   sizeof(fi_local));
+            fi_local[sizeof(fi_local) - 1] = 0;
+            const char * preset = fi_local[0] ? fi_local : "?";
+            char preset_pretty[16] = {0};
+            /* "low"/"high" → "Low"/"High"; preserve "auto"/"medium"/"timer" */
+            snprintf(preset_pretty, sizeof(preset_pretty), "%c%s",
+                     (preset[0] >= 'a' && preset[0] <= 'z')
+                         ? preset[0] - 'a' + 'A' : preset[0],
+                     preset + 1);
+            if (vent_state.remaining_min > 0)
+                lv_label_set_text_fmt(lbl_boiler_state, "%s %dm",
+                                      preset_pretty, vent_state.remaining_min);
+            else
+                lv_label_set_text(lbl_boiler_state, preset_pretty);
+
+            /* Highlight whichever preset button matches the current fan_info
+             * (Timer wins when a countdown is running). White border = active,
+             * 0 = idle. ventilation.c already translates wire→user-intent. */
+            int act_low   = strcmp(fi_local, "low")    == 0;
+            int act_high  = strcmp(fi_local, "high")   == 0;
+            int act_auto  = strcmp(fi_local, "auto")   == 0
+                         || strcmp(fi_local, "medium") == 0;
+            int act_timer = strcmp(fi_local, "timer")  == 0
+                         || vent_state.remaining_min > 0;
+            if (act_timer) { act_low = act_high = act_auto = 0; }
+            if (vent_btn_low)
+                lv_obj_set_style_border_width(vent_btn_low,   act_low   ? 2 : 0, 0);
+            if (vent_btn_high)
+                lv_obj_set_style_border_width(vent_btn_high,  act_high  ? 2 : 0, 0);
+            if (vent_btn_auto)
+                lv_obj_set_style_border_width(vent_btn_auto,  act_auto  ? 2 : 0, 0);
+            if (vent_btn_timer)
+                lv_obj_set_style_border_width(vent_btn_timer, act_timer ? 2 : 0, 0);
+        } else {
+            lv_label_set_text(lbl_boiler_state, "off");
+            if (vent_btn_low)   lv_obj_set_style_border_width(vent_btn_low,   0, 0);
+            if (vent_btn_high)  lv_obj_set_style_border_width(vent_btn_high,  0, 0);
+            if (vent_btn_auto)  lv_obj_set_style_border_width(vent_btn_auto,  0, 0);
+            if (vent_btn_timer) lv_obj_set_style_border_width(vent_btn_timer, 0, 0);
+        }
     }
     if (lbl_boiler_pressure) {
-        if (vent_state.connected)
-            lv_label_set_text_fmt(lbl_boiler_pressure, "%d rpm", vent_state.fan_rpm);
-        else
-            lv_label_set_text(lbl_boiler_pressure, "-- rpm");
+        if (vent_state.connected) {
+            /* Classify source into a 3-char tag so the line stays compact:
+               API = HTML/vremote (toonui or HA), RF  = physical radio remote,
+               BTN = Itho front-panel button, ???  = anything unrecognised. */
+            /* Snapshot vent_state.last_source into a local before strstr —
+             * the buffer is written by vent_thread without a memory
+             * barrier, so the compiler/CPU can hand refresh_cb a stale
+             * (all-zero) view of the chars. memcpy forces a fresh read. */
+            char src_local[64];
+            memcpy(src_local, (const char *)vent_state.last_source,
+                   sizeof(src_local));
+            src_local[sizeof(src_local) - 1] = 0;
+            const char * src_tag = "?";
+            const char * s = src_local;
+            int api_src = (strstr(s, "vremote") || strstr(s, "HTML")) ? 1 : 0;
+            if      (api_src)                                   src_tag = "API";
+            else if (strstr(s, "RFT")     || strstr(s, "RF"))   src_tag = "RF";
+            else if (strstr(s, "button")  || strstr(s, "Itho")) src_tag = "BTN";
+            else if (s[0])                                      src_tag = s;
+            /* If the source looks like a vremote/HTML call AND we issued one
+             * locally within the last 90 s, attribute it to TOON. Itho can't
+             * distinguish callers — this is our only signal. */
+            if (api_src && vent_local_press_ms != 0 &&
+                (lv_tick_get() - vent_local_press_ms) < 90000) {
+                src_tag = "TOON";
+            }
+            lv_label_set_text_fmt(lbl_boiler_pressure,
+                                  "%d%%  %drpm\nvia %s",
+                                  vent_state.speed_pct,
+                                  vent_state.fan_rpm,
+                                  src_tag);
+        } else {
+            lv_label_set_text(lbl_boiler_pressure, "-- %");
+        }
     }
-    /* spin speed tracks the actual exhaust-fan %, not just the setpoint */
+    /* spin speed tracks fan_rpm, not the %, because Itho's % is unreliable
+       on this unit (Error:16 sticks ExhFanSpeed at 0 and the Low/High labels
+       are backwards relative to actual airflow). */
     if (vent_state.connected)
-        vent_apply_fan_anim(vent_state.speed_pct);
+        vent_apply_fan_anim(vent_state.fan_rpm);
+
+    /* Curtains tile — state + position + battery from the HA poller.
+       Spinner is shown only while actively moving; the position bar always
+       reflects the live percentage. */
+    if (lbl_curtain_state) {
+        if (ha_state.connected) {
+            const char * s = ha_state.curtain_state[0]
+                             ? ha_state.curtain_state : "?";
+            char pretty[32] = {0};
+            snprintf(pretty, sizeof(pretty), "%c%s",
+                     (s[0] >= 'a' && s[0] <= 'z') ? s[0] - 'a' + 'A' : s[0],
+                     s + 1);
+            lv_label_set_text_fmt(lbl_curtain_state,
+                                  "Gordijnen %s %d%%  bat %d%%",
+                                  pretty,
+                                  ha_state.curtain_pos,
+                                  ha_state.curtain_battery);
+            if (curt_bar) lv_bar_set_value(curt_bar, ha_state.curtain_pos,
+                                           LV_ANIM_ON);
+            if (curt_spinner) {
+                int moving = (!strcmp(s, "opening") || !strcmp(s, "closing"));
+                if (moving) lv_obj_clear_flag(curt_spinner, LV_OBJ_FLAG_HIDDEN);
+                else        lv_obj_add_flag (curt_spinner, LV_OBJ_FLAG_HIDDEN);
+            }
+        } else {
+            lv_label_set_text(lbl_curtain_state, "Gordijnen  (HA offline)");
+            if (curt_spinner) lv_obj_add_flag(curt_spinner, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
 
     /* Energy bottom tile: live power + cumulative gas. */
     if (lbl_bot_energy) {
@@ -558,12 +699,11 @@ static void refresh_cb(lv_timer_t * t) {
     if (lbl_inbox_sub && hw_state.connected_water) {
         lv_label_set_text_fmt(lbl_inbox_sub, "%.1f L/min", hw_state.water_lpm);
     }
-    if (water_spinner) {
-        if (hw_state.water_lpm > 0.01f)
-            lv_obj_clear_flag(water_spinner, LV_OBJ_FLAG_HIDDEN);
-        else
-            lv_obj_add_flag(water_spinner, LV_OBJ_FLAG_HIDDEN);
-    }
+    /* (water_spinner visibility decided ONCE at the bottom of refresh_cb
+     * with the proper connected_water + >0.05 LPM gate. This earlier copy
+     * was a splat-recovery duplicate with a too-loose 0.01 threshold and
+     * no connected check, so meter wobble or stale data could leave the
+     * spinner running indefinitely. Dropped.) */
 
     /* Outside tile — current temp + short description. */
     if (lbl_outside_main) {
@@ -573,9 +713,12 @@ static void refresh_cb(lv_timer_t * t) {
             lv_label_set_text(lbl_outside_main, "-- C");
     }
 
-    /* Forecast band — prefer the 3-hourly forecast when the location id
-       resolves, fall back to the national 5-day feed otherwise. */
-    if (weather_state.hour_count > 0) {
+    /* Forecast band: honour settings.forecast_mode (auto / forced hourly /
+       forced daily). Forced-hourly still falls back to daily if the hourly
+       fetch has nothing yet. */
+    int show_hourly = settings.forecast_mode != FORECAST_DAILY
+                      && weather_state.hour_count > 0;
+    if (show_hourly) {
         for (int i = 0; i < weather_state.hour_count
                      && i < WEATHER_FORECAST_DAYS; i++) {
             const weather_hour_t * h = &weather_state.hours[i];
@@ -638,10 +781,9 @@ static void refresh_cb(lv_timer_t * t) {
     }
 
     /* Forecast band — splat-recovery left two more copies of this
-       writer further down; gate them on hour_count too so the hourly
-       data the first writer paints isn't immediately overwritten with
-       the daily values. */
-    if (weather_state.hour_count == 0) {
+       writer further down; gate them on the same hourly/daily decision so
+       the data the first writer painted isn't immediately overwritten. */
+    if (!show_hourly) {
         for (int i = 0; i < weather_state.day_count
                      && i < WEATHER_FORECAST_DAYS; i++) {
             const weather_day_t * d = &weather_state.days[i];
@@ -693,12 +835,11 @@ static void refresh_cb(lv_timer_t * t) {
     if (lbl_inbox_sub && hw_state.connected_water) {
         lv_label_set_text_fmt(lbl_inbox_sub, "%.1f L/min", hw_state.water_lpm);
     }
-    if (water_spinner) {
-        if (hw_state.water_lpm > 0.01f)
-            lv_obj_clear_flag(water_spinner, LV_OBJ_FLAG_HIDDEN);
-        else
-            lv_obj_add_flag(water_spinner, LV_OBJ_FLAG_HIDDEN);
-    }
+    /* (water_spinner visibility decided ONCE at the bottom of refresh_cb
+     * with the proper connected_water + >0.05 LPM gate. This earlier copy
+     * was a splat-recovery duplicate with a too-loose 0.01 threshold and
+     * no connected check, so meter wobble or stale data could leave the
+     * spinner running indefinitely. Dropped.) */
 
     /* Outside tile — current temp + short description. */
     if (lbl_outside_main) {
@@ -709,8 +850,8 @@ static void refresh_cb(lv_timer_t * t) {
     }
 
     /* Forecast band — third splat-recovery copy of the daily writer;
-       gate on hour_count so we don't clobber the hourly slots. */
-    if (weather_state.hour_count == 0) {
+       same gating as the earlier two. */
+    if (!show_hourly) {
         for (int i = 0; i < weather_state.day_count
                      && i < WEATHER_FORECAST_DAYS; i++) {
             const weather_day_t * d = &weather_state.days[i];
@@ -752,12 +893,30 @@ static void refresh_cb(lv_timer_t * t) {
 }
 
 /* ---------- screen builder ---------- */
+/* Push the Lights page. Used by both the swipe-right gesture and the
+ * lightbulb button in the top-right. */
+static void on_home_gesture_to_lights(lv_event_t * e) {
+    (void)e;
+    ui_push(screen_lights_create());
+}
+
+static void on_home_gesture(lv_event_t * e) {
+    (void)e;
+    lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+    if (dir == LV_DIR_RIGHT) ui_push(screen_lights_create());
+}
+
 lv_obj_t * screen_home_create(void) {
     if (scr_root) return scr_root;
 
     scr_root = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(scr_root, lv_color_hex(COL_BG), 0);
     lv_obj_clear_flag(scr_root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(scr_root, on_home_gesture, LV_EVENT_GESTURE, NULL);
+
+    /* Top-of-screen package banner (hidden when queue is empty). Tap
+     * dismisses the top entry. Receives from MQTT via packages.c. */
+    packages_banner_attach(scr_root);
 
     /* Layout (1024x600):
          Big thermostat tile:  20,20  520x420   (col 0-1 spanned, row 0-1 spanned)
@@ -769,9 +928,10 @@ lv_obj_t * screen_home_create(void) {
            Energy (P1), Buienradar, Waste, Settings
     */
 
-    /* --- Big thermostat tile (height 410 — leaves room for forecast band) --- */
+    /* --- Big thermostat tile (height 360 — was 410, lost 50 px to make room
+           for the new Curtains strip below it). --- */
     lv_obj_t * th = lv_obj_create(scr_root);
-    lv_obj_set_size(th, 520, 410);
+    lv_obj_set_size(th, 520, 360);
     lv_obj_set_pos(th, 20, 20);
     lv_obj_set_style_bg_color(th, lv_color_hex(COL_TILE_BG), 0);
     lv_obj_set_style_border_width(th, 0, 0);
@@ -1046,42 +1206,27 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_align(lbl_boiler_state, LV_ALIGN_TOP_RIGHT, -4, 14);
 
     /* Spinning fan: 80x80 TRUE_COLOR_ALPHA icon (color baked in). Rotated
-       directly with lv_img_set_angle — works reliably on this format. */
+       directly with lv_img_set_angle — works reliably on this format.
+       Scaled to ~50px (zoom 160) and parked dead-centre so it has clear
+       space below it for the 2-line % / rpm / source label without any
+       overlap on either side. */
     vent_fan_img = lv_img_create(vent.tile);
     lv_img_set_src(vent_fan_img, &icon_fan);
     lv_img_set_pivot(vent_fan_img, 40, 40);
-    lv_obj_align(vent_fan_img, LV_ALIGN_CENTER, 0, 14);
+    lv_img_set_zoom(vent_fan_img, 160);            /* 160/256 ≈ 62 % */
+    lv_obj_align(vent_fan_img, LV_ALIGN_CENTER, 0, -6);
     lv_obj_add_flag(vent_fan_img, LV_OBJ_FLAG_EVENT_BUBBLE);  /* tap → tile */
 
     /* Four corner buttons — Low / High at top, Auto / Timer at bottom.
        Each issues an Itho-Wifi virtual-remote command (vremotecmd=…).
        Timer cycles 10/20/30 min and resets to "auto". */
-    /* Top half: Low|High switch in place of two buttons. Bottom corners
-       still hold Auto + Timer as before. */
-    {
-        lv_obj_t * lbl_lo = lv_label_create(vent.tile);
-        lv_obj_set_style_text_color(lbl_lo, lv_color_hex(0x88aabb), 0);
-        lv_obj_set_style_text_font(lbl_lo, &lv_font_montserrat_14, 0);
-        lv_label_set_text(lbl_lo, "Low");
-        lv_obj_align(lbl_lo, LV_ALIGN_TOP_LEFT, 16, 48);
-
-        lv_obj_t * lbl_hi = lv_label_create(vent.tile);
-        lv_obj_set_style_text_color(lbl_hi, lv_color_hex(0x88aabb), 0);
-        lv_obj_set_style_text_font(lbl_hi, &lv_font_montserrat_14, 0);
-        lv_label_set_text(lbl_hi, "High");
-        lv_obj_align(lbl_hi, LV_ALIGN_TOP_RIGHT, -16, 48);
-
-        lv_obj_t * sw = lv_switch_create(vent.tile);
-        lv_obj_set_size(sw, 64, 26);
-        lv_obj_align(sw, LV_ALIGN_TOP_MID, 0, 46);
-        lv_obj_set_style_bg_color(sw, lv_color_hex(0x224d70), LV_PART_MAIN);
-        lv_obj_set_style_bg_color(sw, lv_color_hex(0x804030),
-                                  LV_PART_INDICATOR | LV_STATE_CHECKED);
-        lv_obj_add_event_cb(sw, on_vent_switch, LV_EVENT_VALUE_CHANGED, NULL);
-    }
-
+    /* Buttons send user-intent commands ("low"/"high"). ventilation.c
+     * applies the wire-side swap (VENT_SWAP_LOW_HIGH) and translates
+     * FanInfo back, so UI code deals only in intuitive labels. */
     struct { lv_align_t a; int x, y; uint32_t col; const char * cmd;
              const char * txt; lv_event_cb_t cb; } btn[] = {
+        { LV_ALIGN_TOP_LEFT,     4,  46, 0x224d70, "low",  "Low",   on_vent_mode  },
+        { LV_ALIGN_TOP_RIGHT,   -4,  46, 0x804030, "high", "High",  on_vent_mode  },
         { LV_ALIGN_BOTTOM_LEFT,  4,  -4, 0x2e6e3a, "auto", "Auto",  on_vent_mode  },
         { LV_ALIGN_BOTTOM_RIGHT,-4,  -4, 0x6a5424, NULL,   "Timer", on_vent_timer },
     };
@@ -1091,6 +1236,10 @@ lv_obj_t * screen_home_create(void) {
         lv_obj_align(b, btn[i].a, btn[i].x, btn[i].y);
         lv_obj_set_style_bg_color(b, lv_color_hex(btn[i].col), 0);
         lv_obj_set_style_radius(b, 8, 0);
+        /* Pre-style border to 0 so the refresh-side toggle is a single
+         * width change (color always white when shown). */
+        lv_obj_set_style_border_color(b, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_border_width(b, 0, 0);
         lv_obj_add_event_cb(b, btn[i].cb, LV_EVENT_CLICKED,
                             (void *)(intptr_t)(uintptr_t)btn[i].cmd);
         lv_obj_t * bl = lv_label_create(b);
@@ -1099,14 +1248,23 @@ lv_obj_t * screen_home_create(void) {
         lv_label_set_text(bl, btn[i].txt);
         lv_obj_center(bl);
         if (btn[i].cb == on_vent_timer) vent_timer_lbl = bl;
+        /* Refs keyed by the visible label, not the cmd — the two are inverted
+         * for low/high on this Itho. */
+        if      (strcmp(btn[i].txt, "Low")   == 0) vent_btn_low   = b;
+        else if (strcmp(btn[i].txt, "High")  == 0) vent_btn_high  = b;
+        else if (strcmp(btn[i].txt, "Auto")  == 0) vent_btn_auto  = b;
+        else if (btn[i].cb == on_vent_timer)       vent_btn_timer = b;
     }
 
-    /* rpm sits just above the bottom-row buttons. Small font so it
-       doesn't crowd the fan. */
+    /* % + rpm + source on two lines just above the Auto/Timer buttons.
+       Two lines so the per-line width stays narrow and the text doesn't
+       have to overlap the fan icon. Brighter colour than the old DIM grey
+       so it's actually readable against the navy tile. */
     lbl_boiler_pressure = lv_label_create(vent.tile);
-    lv_obj_set_style_text_color(lbl_boiler_pressure, lv_color_hex(COL_TEXT_DIM), 0);
+    lv_obj_set_style_text_color(lbl_boiler_pressure, lv_color_hex(0xbbd6e8), 0);
     lv_obj_set_style_text_font(lbl_boiler_pressure, &lv_font_montserrat_14, 0);
-    lv_label_set_text(lbl_boiler_pressure, "-- rpm");
+    lv_obj_set_style_text_align(lbl_boiler_pressure, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(lbl_boiler_pressure, "--\n--");
     lv_obj_align(lbl_boiler_pressure, LV_ALIGN_BOTTOM_MID, 0, -38);
 
     tile_t water_t;
@@ -1132,6 +1290,71 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_arc_width(water_spinner, 6, LV_PART_MAIN);
     lv_obj_set_style_arc_width(water_spinner, 6, LV_PART_INDICATOR);
     lv_obj_add_flag(water_spinner, LV_OBJ_FLAG_HIDDEN);
+
+    /* --- Curtains tile — slim strip below the (shrunk) thermostat tile.
+           Talks to Home Assistant via REST. Shows the group state +
+           battery; provides Open / Stop / Close buttons. --- */
+    lv_obj_t * curt_tile = lv_obj_create(scr_root);
+    lv_obj_set_size(curt_tile, 520, 44);
+    lv_obj_set_pos(curt_tile, 20, 386);
+    lv_obj_set_style_bg_color(curt_tile, lv_color_hex(COL_TILE_BG), 0);
+    lv_obj_set_style_border_width(curt_tile, 0, 0);
+    lv_obj_set_style_radius(curt_tile, 12, 0);
+    lv_obj_set_style_pad_all(curt_tile, 6, 0);
+    lv_obj_clear_flag(curt_tile, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Left strip: title + live state ("Gordijnen — open / 99%  bat 89%"). */
+    lbl_curtain_state = lv_label_create(curt_tile);
+    lv_obj_set_style_text_color(lbl_curtain_state, lv_color_hex(COL_TEXT_HI), 0);
+    lv_obj_set_style_text_font(lbl_curtain_state, &lv_font_montserrat_14, 0);
+    lv_label_set_text(lbl_curtain_state, "Gordijnen  --");
+    lv_obj_align(lbl_curtain_state, LV_ALIGN_TOP_LEFT, 8, 2);
+
+    /* Position bar 0..100 sits underneath the label so the user can see
+       at a glance how open the curtain is. Same teal as the existing
+       curtain-related elements. */
+    curt_bar = lv_bar_create(curt_tile);
+    lv_obj_set_size(curt_bar, 240, 6);
+    lv_obj_align(curt_bar, LV_ALIGN_BOTTOM_LEFT, 8, -4);
+    lv_bar_set_range(curt_bar, 0, 100);
+    lv_bar_set_value(curt_bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(curt_bar, lv_color_hex(0x223344), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(curt_bar, lv_color_hex(0x44aaff), LV_PART_INDICATOR);
+
+    /* Tiny spinner overlay — visible only while the curtain is mid-move.
+       lv_spinner is the same widget the water tile uses; it's an arc
+       that rotates continuously. */
+    curt_spinner = lv_spinner_create(curt_tile, 1200, 80);
+    lv_obj_set_size(curt_spinner, 28, 28);
+    lv_obj_align(curt_spinner, LV_ALIGN_LEFT_MID, 254, 0);
+    lv_obj_set_style_arc_color(curt_spinner, lv_color_hex(0x223344), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(curt_spinner, lv_color_hex(0x44aaff),
+                               LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(curt_spinner, 4, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(curt_spinner, 4, LV_PART_INDICATOR);
+    lv_obj_add_flag(curt_spinner, LV_OBJ_FLAG_HIDDEN);
+
+    /* Three buttons on the right: Open / Stop / Close. Narrower than the
+       default tile-button width so the label on the left has room for the
+       full state + battery readout. */
+    struct { const char * txt; uint32_t col; lv_event_cb_t cb; int x; } cbtn[] = {
+        { "Open",  0x2e6e3a, on_curt_open,  -156 },
+        { "Stop",  0x6a5424, on_curt_stop,   -82 },
+        { "Close", 0x6e3a3a, on_curt_close,   -8 },
+    };
+    for (size_t i = 0; i < sizeof(cbtn)/sizeof(cbtn[0]); i++) {
+        lv_obj_t * b = lv_btn_create(curt_tile);
+        lv_obj_set_size(b, 70, 32);
+        lv_obj_align(b, LV_ALIGN_RIGHT_MID, cbtn[i].x, 0);
+        lv_obj_set_style_bg_color(b, lv_color_hex(cbtn[i].col), 0);
+        lv_obj_set_style_radius(b, 8, 0);
+        lv_obj_add_event_cb(b, cbtn[i].cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t * bl = lv_label_create(b);
+        lv_obj_set_style_text_color(bl, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(bl, &lv_font_montserrat_14, 0);
+        lv_label_set_text(bl, cbtn[i].txt);
+        lv_obj_center(bl);
+    }
 
     /* --- Forecast band — fills the area below the upper-row tiles.
            5 day columns; each shows day label + min/max temp + a big
@@ -1248,6 +1471,25 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_center(envelope_badge_lbl);
     lv_obj_add_flag(envelope_btn,   LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(envelope_badge, LV_OBJ_FLAG_HIDDEN);
+
+    /* Lights button — to the left of the gear. Same circle treatment as
+     * the gear; tap (or swipe-right anywhere on home) opens the Lights
+     * page. */
+    {
+        lv_obj_t * b = lv_btn_create(scr_root);
+        lv_obj_set_size(b, 44, 44);
+        lv_obj_align(b, LV_ALIGN_TOP_RIGHT, -60, 4);
+        lv_obj_set_style_bg_color(b, lv_color_hex(0x4a3a18), 0);
+        lv_obj_set_style_radius(b, 22, 0);
+        lv_obj_set_ext_click_area(b, 14);
+        lv_obj_add_event_cb(b, on_home_gesture_to_lights,
+                            LV_EVENT_CLICKED, NULL);
+        lv_obj_t * l = lv_label_create(b);
+        lv_label_set_text(l, LV_SYMBOL_EYE_OPEN);   /* closest "bulb" glyph */
+        lv_obj_set_style_text_color(l, lv_color_hex(0xffcc44), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_18, 0);
+        lv_obj_center(l);
+    }
 
     /* Gear in the very top-right corner of the screen. */
     lv_obj_t * gear = lv_btn_create(scr_root);

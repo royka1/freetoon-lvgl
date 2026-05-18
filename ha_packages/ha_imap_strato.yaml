@@ -1,0 +1,48 @@
+# Drop into /config/packages/pkg_imap.yaml on HA
+# (or paste into configuration.yaml if you don't use packages includes).
+#
+# Pulls delivery emails from your Strato mailbox and hands each one to
+# the parse_email.py script, which POSTs the parsed event to Toon.
+#
+# Required secrets (in /config/secrets.yaml):
+#   pkg_imap_user: "pakketten@yourdomain.tld"
+#   pkg_imap_pass: "your-strato-mailbox-password"
+#
+# Required deploy:
+#   scp parse_email.py to /config/scripts/parse_email.py on HA
+#   (HA File Editor or Studio Code Server add-on works too)
+
+imap:
+  - server: imap.strato.de            # Strato's standard IMAP endpoint
+    port: 993
+    username: !secret pkg_imap_user
+    password: !secret pkg_imap_pass
+    folder: INBOX
+    search: 'UnSeen UnDeleted'        # default — only fresh forwards
+    charset: 'utf-8'
+    # event_message_data tells the integration to include the body text
+    # in trigger.event.data — without this, only headers are exposed.
+    event_message_data:
+      - text
+      - headers
+
+shell_command:
+  pkg_parse_email: >-
+    bash -lc 'echo {{ payload | to_json | quote }} | python3 /config/scripts/parse_email.py >> /config/pkg_parse.log 2>&1'
+
+automation:
+  - id: pkg_imap_to_toon
+    alias: "Packages: parse incoming forwarded email"
+    description: "On every new mail in the IMAP inbox, hand the parsed body to parse_email.py."
+    mode: queued                       # serialize so a burst doesn't race the parser
+    max: 20
+    trigger:
+      - platform: event
+        event_type: imap_content
+    action:
+      - service: shell_command.pkg_parse_email
+        data:
+          payload:
+            from:    "{{ trigger.event.data.sender }}"
+            subject: "{{ trigger.event.data.subject }}"
+            body:    "{{ trigger.event.data.text }}"

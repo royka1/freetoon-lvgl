@@ -11,6 +11,7 @@
  */
 #include "boxtalk.h"
 #include "inbox.h"
+#include "settings.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -209,27 +210,30 @@ static void handle_notify(const char* xml) {
         }
     } else if (strcmp(tail, "ThermostatInfo") == 0) {
         float v;
+        /* Indoor room temperature — happ_thermstat (UUID_THERMSTAT) pushes
+         * this on every measurable change. Was being silently dropped on
+         * this notify path; without it the dim/home screens fell back to
+         * whatever indoor_temp got seeded with at boot and drifted out of
+         * date. Accept both centi-°C (happ's internal: "1889") and °C
+         * already-decimalised, since some firmwares use the larger value. */
+        if (strcmp(src_uuid, UUID_THERMSTAT) == 0 &&
+            elem_text_float(xml, "currentTemp", &v)) {
+            toon_state.indoor_temp = (v > 80.0f) ? v / 100.0f : v;
+            toon_state.msg_count++;
+        }
         if (elem_text_float(xml, "currentSetpoint", &v)) {
             toon_state.setpoint = v / 100.0f;  /* setpoint is centidegrees */
             toon_state.msg_count++;
         }
         if (elem_text_float(xml, "burnerInfo", &v)) {
-            /* 0=off, 1=heating, 2=hot water, 3=preheat.
-             *
-             * Two publishers fight over this field: happ_thermstat (UUID
-             * b822de89…) emits its own internal cache which lags the
-             * actual OT bus by several poll cycles, while quby_bridge
-             * (UUID_THERMSTAT below, e7b8a710…0a01) publishes the live
-             * `flamestatus` straight off OTGW every 2 s. Trust the
-             * bridge; ignore happ_thermstat's stale stream so the
-             * on-screen badge tracks the boiler in real time. */
-            static const char BRIDGE_UUID[] =
-                "e7b8a710-0042-4f6f-9fd2-5cac18fc0a01";
-            if (strcmp(src_uuid, BRIDGE_UUID) == 0) {
-                toon_state.burner_on = (v == 1.0f);
-                toon_state.dhw_on    = (v == 2.0f);
-                toon_state.msg_count++;
-            }
+            /* 0=off, 1=heating, 2=hot water, 3=preheat. Accept whoever
+             * publishes — in wired mode that's happ_thermstat directly;
+             * in wireless mode the quby_bridge republishes the same
+             * field off OTGW. Either is canonical for "is the burner
+             * firing right now". */
+            toon_state.burner_on = (v == 1.0f);
+            toon_state.dhw_on    = (v == 2.0f);
+            toon_state.msg_count++;
         }
         if (elem_text_float(xml, "BoilerChPressure", &v)) {
             /* Some firmwares emit centibar (e.g. 180 = 1.80), others bar
@@ -241,36 +245,41 @@ static void handle_notify(const char* xml) {
             toon_state.msg_count++;
         }
     } else if (strcmp(tail, "BoilerInfo") == 0) {
-        /* Boiler flow/return temps. Log the raw notify a few times so the
-           exact element names can be confirmed on-device. */
+        /* Dump the *full* XML the first 3 times so we can confirm the exact
+         * element names this Toon's happ_thermstat publishes. The previous
+         * truncated %.400s log let us miss the body — the values sit past
+         * a long enum prefix. */
         static int boiler_log_n = 0;
-        if (boiler_log_n < 5) {
+        if (boiler_log_n < 3) {
             boiler_log_n++;
-            fprintf(stderr, "[bxt] BoilerInfo notify: %.400s\n", xml);
+            fprintf(stderr, "[bxt] BoilerInfo notify (full): %s\n", xml);
         }
         float v;
-        /* Outlet = CH flow/supply temp. Try capitalised state-var name and
-           a couple of lowercase dataset variants. */
+        int got = 0;
         if (elem_text_float(xml, "CurrentBoilerTemperature", &v) ||
             elem_text_float(xml, "currentBoilerTemperature", &v) ||
             elem_text_float(xml, "boilerTemp", &v)) {
             toon_state.boiler_out_temp = v;
             toon_state.msg_count++;
+            got |= 1;
         }
-        /* Inlet = CH return temp. */
         if (elem_text_float(xml, "CurrentBoilerReturnTemperature", &v) ||
             elem_text_float(xml, "currentBoilerReturnTemperature", &v) ||
             elem_text_float(xml, "boilerReturnTemp", &v)) {
             toon_state.boiler_in_temp = v;
             toon_state.msg_count++;
+            got |= 2;
         }
-        /* Control setpoint — what happ_thermstat is asking the boiler to
-         * heat the CH water TO. Published by quby_bridge as DID 1 flows
-         * through; the UI uses this as the "target" alongside the live
-         * boiler flow temp so users see both numbers. */
         if (elem_text_float(xml, "ControlSetpoint", &v)) {
             toon_state.ch_setpoint = v;
             toon_state.msg_count++;
+            got |= 4;
+        }
+        if (boiler_log_n <= 3) {
+            fprintf(stderr, "[bxt] BoilerInfo parsed: got_mask=0x%x  out=%.2f in=%.2f chsp=%.2f\n",
+                    got, (double)toon_state.boiler_out_temp,
+                    (double)toon_state.boiler_in_temp,
+                    (double)toon_state.ch_setpoint);
         }
     }
 }
@@ -588,6 +597,16 @@ void boxtalk_request_setpoint_refresh(void) {
     send_query("b822de89-ecbd-4f6f-9fd2-5cac18fc06c4", "ThermostatInfo", "CurrentSetpoint");
 }
 
+/* Pull a fresh indoor temperature read directly from happ_thermstat.
+   The TemperatureSensor notify subscription only fires on a state CHANGE
+   (and happ_thermstat throttles internally), so the dim screen could
+   show a value many minutes old when room temp drifts slowly. The
+   periodic poll loop + wake-screen handler call this to force a fresh
+   value into toon_state.indoor_temp. */
+void boxtalk_request_indoor_refresh(void) {
+    send_query(THERMSTAT_UUID, "ThermostatInfo", "CurrentTemperature");
+}
+
 void boxtalk_request_boiler_refresh(void) {
     /* The boilerDev/BoilerInfo path rejects CurrentBoiler* names. The boiler
        flow/return temps are exposed on happ_thermstat's ThermostatInfo
@@ -654,6 +673,7 @@ static int parse_json_int(const char* json, const char* key, int dflt) {
     return atoi(p);
 }
 
+
 static void* http_poll_thread(void* arg) {
     (void)arg;
     char body[2048];
@@ -668,9 +688,29 @@ static void* http_poll_thread(void* arg) {
             /* OpenTherm health for the Heating settings modal. */
             toon_state.modulation_level = parse_json_int(body, "currentModulationLevel", toon_state.modulation_level);
             toon_state.ot_comm_error    = parse_json_int(body, "otCommError", toon_state.ot_comm_error);
+            /* Burner state: needed for home/dim flame + faucet icons. The
+             * BoxTalk path doesn't deliver this reliably — quby_bridge
+             * publishes burnerInfo on ThermostatInfo from a HappBoiler-
+             * registered UUID and HCB silently drops cross-service
+             * notifies; happ_thermstat doesn't publish it as a notify
+             * either (only on QueryStateVariable response). HTTP poll is
+             * the canonical reliable path on this Toon. */
+            int bi = parse_json_int(body, "burnerInfo", -2);
+            if (bi >= 0) {
+                toon_state.burner_on = (bi == 1);
+                toon_state.dhw_on    = (bi == 2);
+            }
+            /* Stooklijn target — same reasoning as burnerInfo. */
+            int chsp = parse_json_int(body, "currentInternalBoilerSetpoint", -1);
+            if (chsp >= 0) toon_state.ch_setpoint = (float)chsp;
         }
-        /* Refresh boiler flow/return temps (query-only, no notifies). */
-        boxtalk_request_boiler_refresh();
+        /* Same story for indoor temperature: happ_thermstat doesn't publish
+         * a TemperatureSensor or ThermostatInfo notify on CurrentTemperature
+         * change (verified by tailing /tmp/quby_bridge-shaped notifies — only
+         * BoilerInfo arrives). Use the BoxTalk query mechanism, which is the
+         * protocol's intended path for query-only state-vars. A query is one
+         * small XML round-trip; not the same as HTTP polling. */
+        boxtalk_request_indoor_refresh();
         sleep(15);
     }
     return NULL;

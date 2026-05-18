@@ -24,6 +24,8 @@ static lv_obj_t * lbl_return;
 static lv_obj_t * img_flame;
 static lv_obj_t * img_faucet;
 static lv_obj_t * img_drop;
+/* Radiator+flame glyph next to the big indoor-temp, shown while CH is firing. */
+static lv_obj_t * img_temp_flame;
 static lv_obj_t * lbl_clock;
 static lv_obj_t * lbl_date;
 static lv_timer_t * refresh_timer = NULL;
@@ -127,7 +129,19 @@ static void refresh_cb(lv_timer_t * t) {
     if (toon_state.boiler_in_temp > 0)
         lv_label_set_text_fmt(lbl_return, "Return  %.1f C", toon_state.boiler_in_temp);
     else
-        lv_label_set_text(lbl_return, "Return  -- C");
+        /* Many boilers leave OT DID 28 (CH return temp) unimplemented; OTGW
+         * reports returnwatertemperature=0 in that case and happ_thermstat
+         * forwards the zero unchanged. Mark it n/a so this row doesn't look
+         * like a UI bug. */
+        lv_label_set_text(lbl_return, "Return  n/a");
+
+    /* Radiator+flame next to the big indoor-temp — visible while CH fires. */
+    if (img_temp_flame) {
+        if (toon_state.burner_on)
+            lv_obj_clear_flag(img_temp_flame, LV_OBJ_FLAG_HIDDEN);
+        else
+            lv_obj_add_flag(img_temp_flame, LV_OBJ_FLAG_HIDDEN);
+    }
 
     /* Force a full screen invalidate to defeat any partial-flush quirk. */
     lv_obj_invalidate(scr_root);
@@ -194,6 +208,17 @@ lv_obj_t * screen_thermostat_create(void) {
     lv_obj_set_style_text_font(lbl_temp, &lv_font_montserrat_48, 0);
     lv_obj_align(lbl_temp, LV_ALIGN_CENTER, 0, -80);
     lv_label_set_text(lbl_temp, "-- C");
+
+    /* Flame icon at left of the big temp — visible only when the burner
+     * is firing CH. Same source/colour as the home-tile flame for
+     * consistency. */
+    img_temp_flame = lv_img_create(scr_root);
+    lv_img_set_src(img_temp_flame, &icon_radiator);
+    lv_img_set_zoom(img_temp_flame, 256);
+    lv_obj_set_style_img_recolor(img_temp_flame, lv_color_hex(0xff6644), 0);
+    lv_obj_set_style_img_recolor_opa(img_temp_flame, 255, 0);
+    lv_obj_align(img_temp_flame, LV_ALIGN_CENTER, 145, -75);
+    lv_obj_add_flag(img_temp_flame, LV_OBJ_FLAG_HIDDEN);
 
     /* Environment readings live in the left column just above the
        setpoint row, where "Boiler idle" used to sit. Boiler state has

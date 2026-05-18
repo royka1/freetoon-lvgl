@@ -4,6 +4,7 @@
 #include "icon_faucet.h"
 #include "icon_drop.h"
 #include "icon_fan.h"
+#include "icon_radiator.h"
 #include "icon_wx_sun.h"
 #include "icon_wx_sun_cloud.h"
 #include "icon_wx_cloud.h"

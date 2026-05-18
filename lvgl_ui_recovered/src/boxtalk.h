@@ -62,6 +62,11 @@ int boxtalk_setpoint_decrease(void);
 
 void boxtalk_request_setpoint_refresh(void);
 
+/* Force a fresh CurrentTemperature pull from happ_thermstat so the dim
+   screen doesn't show a stale value when the TemperatureSensor notify
+   subscription throttles. Called on screen wake. */
+void boxtalk_request_indoor_refresh(void);
+
 /* Query boiler flow/return temps (BoilerInfo is query-only, no notifies). */
 void boxtalk_request_boiler_refresh(void);
 

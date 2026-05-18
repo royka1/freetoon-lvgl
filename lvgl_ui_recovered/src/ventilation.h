@@ -5,15 +5,20 @@
    Updated every VENT_POLL_S seconds by a background thread. */
 typedef struct {
     volatile int   connected;        /* 0/1 */
-    volatile int   speed_pct;        /* "Ventilation setpoint (%)", 0..100 */
-    volatile int   exh_fan_pct;      /* "ExhFanSpeed (%)", 0..100 */
+    volatile int   speed_pct;        /* "ExhFanSpeed (%)" — actual fan output, 0..100 */
+    volatile int   exh_fan_pct;      /* "Ventilation setpoint (%)" — commanded, 0..100 */
     volatile int   fan_rpm;          /* "Fan speed (rpm)" */
     volatile int   filter_dirty;     /* 0/1 */
     volatile int   internal_fault;   /* 0/1 */
     volatile int   error_code;       /* "Error" — Itho internal */
     volatile int   total_hours;      /* "Total operation (hours)" */
     volatile int   remaining_min;    /* "RemainingTime (min)" */
-    char           fan_info[16];     /* "auto" / "low" / … */
+    char           fan_info[16];     /* "auto" / "low" / "high" / "timer" / "medium" */
+    /* From /api.html?get=lastcmd — last command Itho applied + where it
+     * came from (HTML-API vremote vs physical RF remote vs device button). */
+    char           last_cmd[16];     /* "low" / "high" / "auto" / "timer1" … */
+    char           last_source[64];  /* e.g. "HTML API-vremote-0", "RFT-CO2-1234" */
+    volatile long  last_cmd_ts;      /* unix seconds (0 if unknown) */
 } vent_state_t;
 
 extern vent_state_t vent_state;
@@ -23,7 +28,11 @@ int vent_start(void);
 
 /* Send a command — uses the Itho virtual remote API. cmd ∈
  * {"away","low","medium","high","auto","autonight","timer1","timer2","timer3"}.
- * Returns 0 on HTTP 200. Blocks briefly (~1 s). */
+ * Returns 0 on HTTP 200. Blocks briefly (~1 s).
+ *
+ * Pass the USER-INTENT name (what the button on screen says); on units
+ * where Itho's low/high vremote labels are physically inverted, the
+ * implementation does the swap. See VENT_SWAP_LOW_HIGH below. */
 int vent_send_vremote(const char * cmd);
 
 /* Same as vent_send_vremote, but the HTTP fetch is done on a detached

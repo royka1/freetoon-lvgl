@@ -6,10 +6,14 @@
 # the binaries and refreshes config without duplicating inittab rows.
 #
 # Companions:
-#   - toonui        LVGL UI (replaces qt-gui)
-#   - quby_bridge   OTGW HTTP -> Quby serial + BoxTalk publisher
-#   - p1bridge      HomeWizard P1 -> BoxTalk publisher
-#   - toontap       Cross-compiled touch-event injector (debug helper)
+#   - toonui            LVGL UI (replaces qt-gui), serves PWA on :10081
+#   - quby_bridge       Quby<->OT bridge: proxy (default), active, or off
+#   - p1bridge          HomeWizard P1 -> BoxTalk publisher
+#   - toontap           Cross-compiled touch-event injector (debug helper)
+#   - ot_mode_switch.sh Helper called by toonui Settings UI to flip
+#                       off/proxy/wireless modes (rewrites inittab + OTGW GW)
+#   - PWA static files  index.html / app.js / sw.js / icon-192.png in
+#                       /mnt/data/pwa/ — served by toonui's :10081 endpoint
 #
 # Required input:
 #   TOON_HOST   (default: 192.168.3.212)
@@ -40,7 +44,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 TOONUI_BIN="$HERE/lvgl_ui_recovered/build/toonui"
 QUBY_BIN="$HERE/quby_bridge/quby_bridge"
 P1_BIN="$HERE/p1bridge/p1bridge"
-TOONTAP_BIN="$HERE/../qt_rebuild/toontap"   # cross-compiled in /tmp/qt_rebuild
+TOONTAP_BIN="$HERE/../qt_rebuild/toontap"           # cross-compiled in /tmp/qt_rebuild
+# Prefer the in-tree copies so the install bundle is self-contained; fall
+# back to the dev /tmp paths if the user hasn't run ./tools/sync-static.sh
+OT_MODE_SCRIPT="${OT_MODE_SCRIPT:-$HERE/scripts/ot_mode_switch.sh}"
+PWA_DIR="${PWA_DIR:-$HERE/pwa_static}"
 
 SSH="sshpass -p $TOON_PASS ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR $TOON_USER@$TOON_HOST"
 SCP="sshpass -p $TOON_PASS scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
@@ -48,7 +56,11 @@ SCP="sshpass -p $TOON_PASS scp -o StrictHostKeyChecking=no -o UserKnownHostsFile
 # Inittab rows we own. <id>:<runlevels>:<action>:<command>
 # Keep the id stable so re-runs upgrade cleanly instead of stacking.
 TOONUI_LINE="toon:345:respawn:/mnt/data/toonui >> /var/volatile/tmp/toonui.log 2>&1"
-QUBY_LINE="qbri:345:respawn:/mnt/data/quby_bridge -m active >> /var/volatile/tmp/quby_bridge.log 2>&1"
+# Default to proxy mode — shuttles bytes happ_thermstat<->keteladapter 1:1
+# AND publishes BoilerInfo to BoxTalk. Original heat path preserved, PWA
+# boiler card lit. Users can flip to off/wireless via toonui Settings UI
+# (which rewrites this row via /mnt/data/ot_mode_switch.sh).
+QUBY_LINE="qbri:345:respawn:/mnt/data/quby_bridge -m proxy >> /var/volatile/tmp/quby_bridge.log 2>&1"
 P1_LINE="p1br:345:respawn:/mnt/data/p1bridge >> /var/volatile/tmp/p1bridge.log 2>&1"
 
 # ----------------------------------------------------------------------
@@ -71,9 +83,18 @@ check_artefacts() {
             missing=1
         fi
     done
+    if [[ ! -f "$OT_MODE_SCRIPT" ]]; then
+        echo "  missing: $OT_MODE_SCRIPT (mode-switch helper)" >&2
+        missing=1
+    fi
+    if [[ ! -f "$PWA_DIR/index.html" ]]; then
+        echo "  missing PWA static dir: $PWA_DIR/index.html" >&2
+        missing=1
+    fi
     if (( missing )); then
         echo "Run 'make' in lvgl_ui_recovered/src/, p1bridge/, quby_bridge/" >&2
         echo "(and compile toontap.c via toolchain) before installing." >&2
+        echo "PWA files should be checked in under pwa_static/." >&2
         exit 3
     fi
 }
@@ -119,10 +140,21 @@ do_install() {
     check_artefacts
 
     echo "[2/6] Pushing binaries to $TOON_HOST..."
-    push_atomic "$TOONUI_BIN"  "/mnt/data/toonui"
-    push_atomic "$QUBY_BIN"    "/mnt/data/quby_bridge"
-    push_atomic "$P1_BIN"      "/mnt/data/p1bridge"
-    push_atomic "$TOONTAP_BIN" "/mnt/data/toontap"
+    push_atomic "$TOONUI_BIN"   "/mnt/data/toonui"
+    push_atomic "$QUBY_BIN"     "/mnt/data/quby_bridge"
+    push_atomic "$P1_BIN"       "/mnt/data/p1bridge"
+    push_atomic "$TOONTAP_BIN"  "/mnt/data/toontap"
+    push_atomic "$OT_MODE_SCRIPT" "/mnt/data/ot_mode_switch.sh"
+
+    echo "[2b/6] Pushing PWA static files to /mnt/data/pwa/..."
+    remote "mkdir -p /mnt/data/pwa"
+    for f in index.html app.js sw.js manifest.json icon-192.png; do
+        if [[ -f "$PWA_DIR/$f" ]]; then
+            echo "  → /mnt/data/pwa/$f"
+            $SCP "$PWA_DIR/$f" "$TOON_USER@$TOON_HOST:/mnt/data/pwa/${f}.new"
+            remote "mv -f /mnt/data/pwa/${f}.new /mnt/data/pwa/${f}"
+        fi
+    done
 
     echo "[3/6] Writing companion configs..."
     if [[ -n "${VENT_USER:-}" && -n "${VENT_PASS:-}" ]]; then
@@ -172,8 +204,9 @@ do_uninstall() {
     remote "pkill -x toonui      2>/dev/null; pkill -x quby_bridge 2>/dev/null; pkill -x p1bridge 2>/dev/null; true"
     remote "umount -l /dev/ttymxc0 2>/dev/null; true"
 
-    echo "[3/3] Removing binaries + configs..."
-    remote "rm -f /mnt/data/toonui /mnt/data/quby_bridge /mnt/data/p1bridge /mnt/data/toontap /mnt/data/vent.conf /mnt/data/p1bridge.conf"
+    echo "[3/3] Removing binaries + configs + PWA + script..."
+    remote "rm -f /mnt/data/toonui /mnt/data/quby_bridge /mnt/data/p1bridge /mnt/data/toontap /mnt/data/ot_mode_switch.sh /mnt/data/vent.conf /mnt/data/p1bridge.conf"
+    remote "rm -rf /mnt/data/pwa"
 
     reload_init
     echo "Uninstalled."

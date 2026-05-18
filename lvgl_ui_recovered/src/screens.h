@@ -27,6 +27,7 @@ lv_obj_t * screen_schedule_create(void);
 lv_obj_t * screen_heater_advanced_create(void);
 lv_obj_t * screen_vent_remote_create(void);
 lv_obj_t * screen_vent_advanced_create(void);
+lv_obj_t * screen_lights_create(void);
 
 /* Called once at boot. Loads home as root. */
 void ui_init(void);
