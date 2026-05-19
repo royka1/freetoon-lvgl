@@ -100,18 +100,48 @@ static lv_obj_t * fc_icon[WEATHER_FORECAST_DAYS];
  * set_forecast_icon() manages visibility + src + recolor. */
 static lv_obj_t * fc_icon_sun[WEATHER_FORECAST_DAYS];
 
+/* Buienradar uses a single-letter code for daytime weather and a
+ * double-letter code ("aa", "bb", "rr", "nn") for the same condition
+ * at night. We detect the double-letter as "night-time" and substitute
+ * a moon-flavoured rendering: clear nights become a plain moon icon,
+ * partly-cloudy nights become moon-behind-cloud (instead of sun-behind-
+ * cloud). Other conditions keep their daytime appearance — at night,
+ * rain and snow still LOOK like rain and snow. */
+static int is_night_code(const char * letter) {
+    if (!letter || !letter[0] || !letter[1]) return 0;
+    return letter[0] == letter[1];   /* "aa","bb","rr","nn" → night variant */
+}
+
 static void set_forecast_icon(lv_obj_t * cloud, lv_obj_t * sun,
                               const char * letter) {
     if (!cloud) return;
+    int is_night   = is_night_code(letter);
     int is_partly  = letter && (letter[0] == 'b' || letter[0] == 'j');
     int is_thunder = letter && (letter[0] == 'g' || letter[0] == 'm');
+    int is_clear   = letter && letter[0] == 'a';
+
+    /* Clear sky at night → moon icon, no overlay needed. */
+    if (is_night && is_clear) {
+        lv_img_set_src(cloud, &icon_wx_moon);
+        lv_obj_set_style_img_recolor(cloud, lv_color_hex(0xe8edf2), 0);   /* moon white */
+        if (sun) lv_obj_add_flag(sun, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
     if (is_partly) {
-        /* Partly cloudy — white cloud + yellow sun overlay (top-left). */
+        /* Partly cloudy — white cloud + sun overlay (day) or moon overlay
+         * (night). The night variant ("bb") swaps the yellow sun for a
+         * pale moon so the slot doesn't render a sun glyph at midnight. */
         lv_img_set_src(cloud, weather_icon_for("d"));            /* plain cloud */
         lv_obj_set_style_img_recolor(cloud, lv_color_hex(0xf0f4f8), 0);
         if (sun) {
-            lv_img_set_src(sun, weather_icon_for("a"));          /* plain sun */
-            lv_obj_set_style_img_recolor(sun, lv_color_hex(0xffd24a), 0);
+            if (is_night) {
+                lv_img_set_src(sun, &icon_wx_moon);
+                lv_obj_set_style_img_recolor(sun, lv_color_hex(0xe8edf2), 0);
+            } else {
+                lv_img_set_src(sun, weather_icon_for("a"));      /* plain sun */
+                lv_obj_set_style_img_recolor(sun, lv_color_hex(0xffd24a), 0);
+            }
             lv_obj_set_style_img_recolor_opa(sun, 255, 0);
             lv_obj_clear_flag(sun, LV_OBJ_FLAG_HIDDEN);
         }

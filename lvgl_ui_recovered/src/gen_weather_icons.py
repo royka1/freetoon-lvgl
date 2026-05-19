@@ -146,6 +146,49 @@ def bolt():
         line(p, pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1], 255, 2.2)
     return p
 
+# --- Moon (waxing crescent shape — looks night-y without being phase-
+# specific. The phase-specific tweak lives in moon_phase() below which
+# subtracts a smaller disc from this base to carve out the dark side. )
+def moon_full():
+    """Full disc — bright moon for full-phase days."""
+    p = blank()
+    disc(p, 20, 20, 12, 255)
+    return p
+
+def moon_phase(phase01):
+    """phase01 in [0,1) — 0=new, 0.25=first quarter, 0.5=full, 0.75=last quarter.
+       Returns a 40x40 alpha pixel array of the moon at that phase, rendered
+       as a bright disc with a dark disc subtracted to carve out the shadowed
+       side. We approximate the terminator as another circle with an x-offset
+       that depends on the phase angle."""
+    p = blank()
+    cx, cy, r = 20, 20, 12
+    disc(p, cx, cy, r, 255)
+    # phase angle (0 to 2π); the shadow disc's offset from the moon's center
+    # is proportional to cos(phase angle), and its sign flips between waxing
+    # and waning halves of the lunar month.
+    ang = phase01 * 2 * math.pi
+    # Use a larger shadow disc so it cuts a clean concave edge.
+    shadow_r = int(r * 1.2)
+    # For phase01 ∈ (0, 0.5) the shadow rides the LEFT side and shrinks
+    # toward 0 at full. For phase01 ∈ (0.5, 1) it rides the RIGHT side
+    # and grows back toward new.
+    offset = int(math.cos(ang) * (r + 2))
+    # subtract the shadow disc — write 0 (transparent) inside it
+    for y in range(cy - shadow_r - 1, cy + shadow_r + 2):
+        for x in range(cx + offset - shadow_r - 1, cx + offset + shadow_r + 2):
+            if 0 <= x < W and 0 <= y < H:
+                d = math.hypot(x - (cx + offset), y - cy)
+                if d <= shadow_r:
+                    p[y * W + x] = 0
+    return p
+
+# A single "moon" icon stored in the catalog — pick approximate-half phase
+# (waxing gibbous) as the default. Runtime code picks the phase variant
+# below per-tile based on current date.
+def moon():
+    return moon_phase(0.30)
+
 # --- Snow (cloud with stars) ---
 def snow():
     p = cloud()
@@ -184,6 +227,7 @@ def emit_all(size_px, suffix):
         ("icon_wx_rain_heavy"+ suffix, rain_heavy()),
         ("icon_wx_thunder"   + suffix, thunder()),
         ("icon_wx_bolt"      + suffix, bolt()),
+        ("icon_wx_moon"      + suffix, moon()),
         ("icon_wx_snow"      + suffix, snow()),
         ("icon_wx_fog"       + suffix, fog()),
     ]
@@ -290,6 +334,21 @@ def bolt_lg():
         line2(p, pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1], 255, 4.4)
     return p
 
+def moon_lg():
+    p = blank()
+    cx, cy, r = 40, 40, 24
+    disc2(p, cx, cy, r, 255)
+    shadow_r = int(r * 1.2)
+    # waxing gibbous default
+    offset = int(math.cos(0.30 * 2 * math.pi) * (r + 4))
+    for y in range(cy - shadow_r - 2, cy + shadow_r + 3):
+        for x in range(cx + offset - shadow_r - 2, cx + offset + shadow_r + 3):
+            if 0 <= x < W and 0 <= y < H:
+                d = math.hypot(x - (cx + offset), y - cy)
+                if d <= shadow_r:
+                    p[y * W + x] = 0
+    return p
+
 def snow_lg():
     p = cloud_lg()
     for (sx, sy) in [(24, 72), (40, 76), (56, 72), (32, 66), (48, 66)]:
@@ -322,6 +381,7 @@ icons_lg = [
     ("icon_wx_rain_heavy_lg", rain_heavy_lg()),
     ("icon_wx_thunder_lg",    thunder_lg()),
     ("icon_wx_bolt_lg",       bolt_lg()),
+    ("icon_wx_moon_lg",       moon_lg()),
     ("icon_wx_snow_lg",       snow_lg()),
     ("icon_wx_fog_lg",        fog_lg()),
 ]
