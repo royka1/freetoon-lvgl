@@ -73,9 +73,33 @@ void ui_idle_tick(void) {
     }
     wake_pending = 0;
 
-    if (!settings.auto_dim_enabled) return;
     uint32_t now = lv_tick_get();
     uint32_t elapsed_ms = now - last_activity_ms;
+
+    /* Auto-return-to-home: after settings.auto_home_seconds of no touch, drop
+     * any sub-screen the user navigated into so they come back to the home
+     * screen. Runs independently of auto-dim and works whether or not we're
+     * dimmed: when dimmed, the dim screen sits on top, so we collapse the
+     * stack underneath it to just home (waking then lands on home rather than
+     * the abandoned sub-screen). Doesn't reset last_activity, so auto-dim keeps
+     * counting from the original idle moment. */
+    if (settings.auto_home_enabled) {
+        uint32_t home_threshold = (uint32_t)settings.auto_home_seconds * 1000u;
+        int on_subscreen = is_dimmed ? (sp > 2) : (sp > 1);
+        if (on_subscreen && elapsed_ms >= home_threshold) {
+            fprintf(stderr, "[ui] auto-home after %u ms idle\n", elapsed_ms);
+            if (is_dimmed) {
+                /* Keep the dim screen on top; make home the only thing under it. */
+                stack[1] = stack[sp - 1];
+                sp = 2;
+            } else {
+                sp = 1;
+                lv_scr_load(stack[0]);
+            }
+        }
+    }
+
+    if (!settings.auto_dim_enabled) return;
     uint32_t threshold = (uint32_t)settings.auto_dim_seconds * 1000u;
     if (!is_dimmed && elapsed_ms >= threshold) {
         fprintf(stderr, "[ui] dimming after %u ms idle\n", elapsed_ms);

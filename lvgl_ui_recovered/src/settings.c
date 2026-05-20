@@ -12,6 +12,8 @@
 settings_t settings = {
     .auto_dim_enabled  = 1,
     .auto_dim_seconds  = 10,
+    .auto_home_enabled = 1,
+    .auto_home_seconds = 60,
     .active_brightness = 800,
     .dim_brightness    = 80,
     .temp_offset_centi = 0,
@@ -61,6 +63,7 @@ settings_t settings = {
     .boot_picker_enabled = 1,
     .hide_offline_tiles  = 0,
     .update_check_enabled = 1,
+    .energy_source       = 0,   /* meteradapter (official) by default */
 };
 
 float display_indoor_temp(float raw) {
@@ -108,6 +111,8 @@ void settings_load(void) {
         int iv = atoi(v);
         if      (strcmp(k, "auto_dim_enabled")  == 0) settings.auto_dim_enabled  = iv;
         else if (strcmp(k, "auto_dim_seconds")  == 0) settings.auto_dim_seconds  = iv;
+        else if (strcmp(k, "auto_home_enabled") == 0) settings.auto_home_enabled = iv;
+        else if (strcmp(k, "auto_home_seconds") == 0) settings.auto_home_seconds = iv;
         else if (strcmp(k, "active_brightness") == 0) settings.active_brightness = iv;
         else if (strcmp(k, "dim_brightness")    == 0) settings.dim_brightness    = iv;
         else if (strcmp(k, "temp_offset_centi") == 0) settings.temp_offset_centi = iv;
@@ -161,6 +166,7 @@ void settings_load(void) {
         else if (strcmp(k, "enable_vent")     == 0) { settings.enable_vent     = iv; seen_vent     = 1; }
         else if (strcmp(k, "enable_ha")       == 0) { settings.enable_ha       = iv; seen_ha       = 1; }
         else if (strcmp(k, "enable_zwave")    == 0) settings.enable_zwave = iv;
+        else if (strcmp(k, "energy_source")   == 0) settings.energy_source = iv;
         else if (strcmp(k, "boot_picker_enabled") == 0) settings.boot_picker_enabled = iv;
         else if (strcmp(k, "hide_offline_tiles")  == 0) settings.hide_offline_tiles = iv;
         else if (strcmp(k, "update_check_enabled") == 0) settings.update_check_enabled = iv;
@@ -240,6 +246,8 @@ void settings_save(void) {
     if (!f) return;
     fprintf(f, "auto_dim_enabled=%d\n",  settings.auto_dim_enabled);
     fprintf(f, "auto_dim_seconds=%d\n",  settings.auto_dim_seconds);
+    fprintf(f, "auto_home_enabled=%d\n", settings.auto_home_enabled);
+    fprintf(f, "auto_home_seconds=%d\n", settings.auto_home_seconds);
     fprintf(f, "active_brightness=%d\n", settings.active_brightness);
     fprintf(f, "dim_brightness=%d\n",    settings.dim_brightness);
     fprintf(f, "temp_offset_centi=%d\n", settings.temp_offset_centi);
@@ -267,6 +275,7 @@ void settings_save(void) {
     fprintf(f, "enable_vent=%d\n",     settings.enable_vent);
     fprintf(f, "enable_ha=%d\n",       settings.enable_ha);
     fprintf(f, "enable_zwave=%d\n",    settings.enable_zwave);
+    fprintf(f, "energy_source=%d\n",   settings.energy_source);
     fprintf(f, "boot_picker_enabled=%d\n", settings.boot_picker_enabled);
     fprintf(f, "hide_offline_tiles=%d\n",  settings.hide_offline_tiles);
     fprintf(f, "update_check_enabled=%d\n", settings.update_check_enabled);

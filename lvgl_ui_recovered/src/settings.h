@@ -4,6 +4,8 @@
 typedef struct {
     int auto_dim_enabled;     /* 0/1 — switch to ambient screen after idle */
     int auto_dim_seconds;     /* 5..300 — idle timeout in seconds */
+    int auto_home_enabled;    /* 0/1 — return to the home screen after idle */
+    int auto_home_seconds;    /* 5..600 — idle timeout before auto-returning home */
     int active_brightness;    /* 0..1000 backlight when active */
     int dim_brightness;       /* 0..1000 backlight while dimmed */
     int temp_offset_centi;    /* -500..+500 — added to displayed indoor temp,
@@ -75,6 +77,14 @@ typedef struct {
      * controller's advanced control is genuinely enabled. See
      * reference_toon_zwave_api memory for the HTTP API. */
     int enable_zwave;
+
+    /* Energy data source for the Energy tile.
+     *   0 = meteradapter — the Toon's own built-in smart-meter reading via
+     *       happ_pwrusage (the official/stock path). Default.
+     *   1 = p1 — HomeWizard P1 over the LAN (the homewizard.c poller).
+     * Per-device: a Toon with a working meteradapter uses 0; a setup that
+     * reads the meter via a HomeWizard P1 instead picks 1. */
+    int energy_source;
 
     /* Boot-picker — when 1, the launcher-spawned `toonui --bootpick`
      * shows a 10 s "freetoon vs stock qt-gui" picker before dispatching.

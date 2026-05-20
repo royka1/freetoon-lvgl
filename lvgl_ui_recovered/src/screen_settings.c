@@ -43,6 +43,8 @@ static void       (*modal_tick_fn)(void) = NULL;
 /* ---- per-control widget pointers (valid only while a modal is open) ---- */
 static lv_obj_t * sw_enable;
 static lv_obj_t * sl_timeout,  * lbl_timeout_val;
+static lv_obj_t * sw_home_enable;
+static lv_obj_t * sl_home_timeout, * lbl_home_timeout_val;
 static lv_obj_t * sl_act,      * lbl_act_val;
 static lv_obj_t * sl_dim,      * lbl_dim_val;
 static lv_obj_t * sw_dim_wx;
@@ -110,6 +112,14 @@ static void on_timeout_change(lv_event_t * e) {
     int v = lv_slider_get_value(lv_event_get_target(e));
     settings.auto_dim_seconds = v;
     lv_label_set_text_fmt(lbl_timeout_val, "%d s", v);
+}
+static void on_home_enable_change(lv_event_t * e) {
+    settings.auto_home_enabled = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+}
+static void on_home_timeout_change(lv_event_t * e) {
+    int v = lv_slider_get_value(lv_event_get_target(e));
+    settings.auto_home_seconds = v;
+    lv_label_set_text_fmt(lbl_home_timeout_val, "%d s", v);
 }
 static void on_act_change(lv_event_t * e) {
     int v = lv_slider_get_value(lv_event_get_target(e));
@@ -373,7 +383,11 @@ static void about_tick(void) {
 
 static void open_display_modal(lv_event_t * e) {
     (void)e;
-    lv_obj_t * p = modal_open("Display", 460);
+    lv_obj_t * p = modal_open("Display", 560);
+    /* Six rows don't fit a fixed panel on a 600px screen — let it scroll. */
+    lv_obj_add_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(p, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(p, LV_SCROLLBAR_MODE_AUTO);
     int y = 70;
     lv_obj_t * r;
 
@@ -384,6 +398,15 @@ static void open_display_modal(lv_event_t * e) {
     r = panel_row(p, y, "Idle timeout", &lbl_timeout_val);
     lv_label_set_text_fmt(lbl_timeout_val, "%d s", settings.auto_dim_seconds);
     sl_timeout = row_slider(r, 5, 300, settings.auto_dim_seconds, on_timeout_change);
+    y += 82;
+
+    r = panel_row(p, y, "Return to home when idle", NULL);
+    sw_home_enable = row_switch(r, settings.auto_home_enabled, on_home_enable_change);
+    y += 82;
+
+    r = panel_row(p, y, "Return-home timeout", &lbl_home_timeout_val);
+    lv_label_set_text_fmt(lbl_home_timeout_val, "%d s", settings.auto_home_seconds);
+    sl_home_timeout = row_slider(r, 5, 600, settings.auto_home_seconds, on_home_timeout_change);
     y += 82;
 
     r = panel_row(p, y, "Active brightness", &lbl_act_val);
@@ -749,6 +772,12 @@ static void open_zwave(lv_event_t * e) {
     ui_push(screen_zwave_create());
 }
 
+/* Adapters tile-tap: push the meter/boiler adapter status + diagnostics screen. */
+static void open_adapters(lv_event_t * e) {
+    (void)e;
+    ui_push(screen_adapters_create());
+}
+
 /* WiFi tile-tap: push the WiFi scan/connect/status screen. */
 static void open_wifi(lv_event_t * e) {
     (void)e;
@@ -799,6 +828,7 @@ static lv_obj_t * sw_int_p1_water;
 static lv_obj_t * sw_int_vent;
 static lv_obj_t * sw_int_ha;
 static lv_obj_t * sw_int_hide_offline;
+static lv_obj_t * sw_int_energy_src;
 
 static void integ_dirty_hint(void) {
     if (!lbl_integ_hint) return;
@@ -831,15 +861,27 @@ static void on_int_hide_offline(lv_event_t * e) {
     settings.hide_offline_tiles =
         lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
 }
+/* Energy source: OFF = meteradapter (Toon's own meter, default), ON = HomeWizard
+ * P1. Live — both pollers always run, the Energy tile just reads the chosen one,
+ * so no restart needed (persist it though). */
+static void on_int_energy_src(lv_event_t * e) {
+    settings.energy_source =
+        lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+    settings_save();
+}
 
 static void open_integrations_modal(lv_event_t * e) {
     (void)e;
     /* Five panel_rows × 84 + 92 + 100 (hint label) ≈ 612. Bump the modal
      * height so the hide-offline switch + hint actually fit. */
-    lv_obj_t * p = modal_open("Integrations", 620);
+    lv_obj_t * p = modal_open("Integrations", 710);
     int y = 70;
 
     lv_obj_t * r;
+    r = panel_row(p, y, "Energy source: ON = HomeWizard P1, OFF = meteradapter", NULL);
+    sw_int_energy_src = row_switch(r, settings.energy_source, on_int_energy_src);
+    y += 84;
+
     r = panel_row(p, y, "HomeWizard P1 (electricity + gas)", NULL);
     sw_int_p1_elec = row_switch(r, settings.enable_p1_elec, on_int_p1_elec);
     y += 84;
@@ -2044,6 +2086,8 @@ lv_obj_t * screen_settings_create(void) {
               "built-in devices", open_zwave); n++;
     make_tile(GX(n), GY(n), NULL, LV_SYMBOL_WIFI, "WiFi",
               "scan & connect", open_wifi); n++;
+    make_tile(GX(n), GY(n), NULL, LV_SYMBOL_CHARGE, "Adapters",
+              "meter & boiler", open_adapters); n++;
     #undef GX
     #undef GY
 

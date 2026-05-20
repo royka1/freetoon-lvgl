@@ -87,6 +87,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "[main] boxtalk_start failed\n");
     if (homewizard_start() != 0)
         fprintf(stderr, "[main] homewizard_start failed\n");
+    extern int meteradapter_start(void);
+    if (meteradapter_start() != 0)
+        fprintf(stderr, "[main] meteradapter_start failed\n");
     if (weather_start() != 0)
         fprintf(stderr, "[main] weather_start failed\n");
     if (waste_start() != 0)

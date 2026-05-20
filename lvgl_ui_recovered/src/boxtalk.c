@@ -14,6 +14,7 @@
 #include "schedule.h"
 #include "settings.h"
 #include "tile_slots.h"
+#include "meteradapter.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,7 +111,30 @@ const char* program_label(void) {
 
 static int sock_fd = -1;
 static pthread_mutex_t send_lock = PTHREAD_MUTEX_INITIALIZER;
-static const char* OUR_UUID = "qb-659918000101-2011A0LOHI:toonui";
+
+/* Device UUIDs are derived from the local hostname at startup — on a Toon the
+ * hostname IS the device serial (e.g. "qb-659918000101-2011A0LOHI"), and
+ * targeted BoxTalk actions (Z-Wave, netcon, usermsg, rrd) must address the
+ * *local* device or hcb_bxtproxy won't route them. Hardcoding one serial broke
+ * every other Toon. The literals below are just the fallback if gethostname
+ * fails or returns a non-"qb-" name. */
+static char dev_base[64]      = "qb-659918000101-2011A0LOHI";
+static char OUR_UUID[96]      = "qb-659918000101-2011A0LOHI:toonui";
+static char ZWAVE_UUID[96]    = "qb-659918000101-2011A0LOHI:hdrv_zwave";
+static char NETCON_UUID[96]   = "qb-659918000101-2011A0LOHI:hcb_netcon";
+static char USERMSG_UUID[96]  = "qb-659918000101-2011A0LOHI:happ_usermsg";
+static char RRD_UUID[96]      = "qb-659918000101-2011A0LOHI:hcb_rrd";
+
+static void bt_init_dev_uuids(void) {
+    char hn[64] = {0};
+    if (gethostname(hn, sizeof hn - 1) == 0 && strncmp(hn, "qb-", 3) == 0)
+        snprintf(dev_base, sizeof dev_base, "%s", hn);
+    snprintf(OUR_UUID,     sizeof OUR_UUID,     "%s:toonui",      dev_base);
+    snprintf(ZWAVE_UUID,   sizeof ZWAVE_UUID,   "%s:hdrv_zwave",  dev_base);
+    snprintf(NETCON_UUID,  sizeof NETCON_UUID,  "%s:hcb_netcon",  dev_base);
+    snprintf(USERMSG_UUID, sizeof USERMSG_UUID, "%s:happ_usermsg",dev_base);
+    snprintf(RRD_UUID,     sizeof RRD_UUID,     "%s:hcb_rrd",     dev_base);
+}
 
 #define BUFCAP (64 * 1024)
 static char rxbuf[BUFCAP];
@@ -262,6 +286,15 @@ static void handle_notify(const char* xml) {
                so swallow zero updates — keep the OTGW-bridge value. */
             if (v > 0.05f)
                 toon_state.water_pressure = (v > 10.0f) ? v / 100.0f : v;
+            toon_state.msg_count++;
+        }
+    } else if (strcmp(tail, "ElectricityFlowMeter") == 0) {
+        /* Official energy source: happ_pwrusage publishes the live smart-meter
+         * power here (W). Drives the Energy tile when energy_source=meteradapter
+         * and the Adapters tile's online/offline state. */
+        float v;
+        if (elem_text_float(xml, "CurrentElectricityFlow", &v)) {
+            meteradapter_on_flow(v);
             toon_state.msg_count++;
         }
     } else if (tile_slots_integration_by_service(sid) != NULL) {
@@ -472,7 +505,6 @@ volatile int rrd_response_ready = 0;
 char         rrd_response_buf[16384];
 
 /* ---- hdrv_zwave (built-in Z-Wave controller) plumbing ---- */
-#define ZWAVE_UUID "qb-659918000101-2011A0LOHI:hdrv_zwave"
 volatile int zwave_response_ready = 0;
 char         zwave_response_buf[16384];
 
@@ -517,7 +549,6 @@ int boxtalk_zwave_exclude(int start) {
 }
 
 /* ---- hcb_netcon (WiFi / network manager) plumbing ---- */
-#define NETCON_UUID "qb-659918000101-2011A0LOHI:hcb_netcon"
 volatile int netcon_response_ready = 0;
 char         netcon_response_buf[16384];
 
@@ -638,12 +669,12 @@ int boxtalk_set_boiler_type(int type) {
 int boxtalk_get_rra_data(const char * uuid, const char * rra_name) {
     char buf[1024];
     snprintf(buf, sizeof(buf),
-        "<action class=\"invoke\" uuid=\"%s\" destuuid=\"qb-659918000101-2011A0LOHI:hcb_rrd\" "
+        "<action class=\"invoke\" uuid=\"%s\" destuuid=\"%s\" "
         "serviceid=\"urn:hcb-hae-com:serviceId:specific1\" requestid=\"%d-rra\">"
         "<u:GetRraData xmlns:u=\"urn:hcb-hae-com:service:specific1:1\">"
         "<rraName>%s</rraName><uuid>%s</uuid>"
         "</u:GetRraData></action>",
-        OUR_UUID, getpid(), rra_name, uuid);
+        OUR_UUID, RRD_UUID, getpid(), rra_name, uuid);
     rrd_response_ready = 0;
     return send_msg(buf);
 }
@@ -736,15 +767,22 @@ static void send_initial_handshake(void) {
         OUR_UUID);
     send_msg(buf);
 
+    /* subscribe to ElectricityFlowMeter — happ_pwrusage publishes the live
+     * smart-meter power (the official "meteradapter" energy source). */
+    snprintf(buf, sizeof(buf),
+        "<subscribe uuid=\"%s\" destuuid=\"\"><target uuid=\"\" serviceid=\"urn:hcb-hae-com:serviceId:ElectricityFlowMeter\"></target></subscribe>",
+        OUR_UUID);
+    send_msg(buf);
+
     /* Subscribe to happ_usermsg notifications dataset (Inbox). */
     snprintf(buf, sizeof(buf),
-        "<action class=\"invoke\" uuid=\"%s\" destuuid=\"qb-659918000101-2011A0LOHI:happ_usermsg\" "
+        "<action class=\"invoke\" uuid=\"%s\" destuuid=\"%s\" "
         "serviceid=\"urn:hcb-hae-com:serviceId:specific1\">"
         "<u:UpdateDataSetSubscription xmlns:u=\"urn:hcb-hae-com:service:specific1:1\">"
         "<updateAction>add</updateAction><dataSet>notifications</dataSet>"
         "<autoExpire>0</autoExpire><supportsNaN>1</supportsNaN><supportsPartial>0</supportsPartial>"
         "<requestFullSet>1</requestFullSet></u:UpdateDataSetSubscription></action>",
-        OUR_UUID);
+        OUR_UUID, USERMSG_UUID);
     send_msg(buf);
 
     /* Active queries to force immediate values (instead of waiting for sensor change) */
@@ -1109,6 +1147,7 @@ static void* bxt_thread(void* arg) {
 }
 
 int boxtalk_start(void) {
+    bt_init_dev_uuids();
     pthread_t th;
     if (pthread_create(&th, NULL, bxt_thread, NULL) != 0) return -1;
     pthread_detach(th);

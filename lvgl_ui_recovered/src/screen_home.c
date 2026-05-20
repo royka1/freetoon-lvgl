@@ -9,6 +9,7 @@
 #include "boxtalk.h"
 #include "icons.h"
 #include "homewizard.h"
+#include "meteradapter.h"
 #include "settings.h"
 #include "weather.h"
 #include "wastecollection.h"
@@ -219,6 +220,27 @@ static lv_obj_t * vent_fan_img = NULL;
 static int        vent_anim_period_ms = -1;
 
 static lv_timer_t * refresh_timer = NULL;
+
+/* ---- Energy source selector ----
+ * settings.energy_source: 0 = meteradapter (Toon's own meter via happ_pwrusage),
+ * 1 = HomeWizard P1. The Energy tile reads through these so the user can switch
+ * source in Settings without touching the rest of the layout. */
+static int energy_connected(void) {
+    return settings.energy_source == 0 ? meter_state.connected
+                                       : (settings.enable_p1_elec && hw_state.connected_p1);
+}
+static float energy_power_w(void) {
+    return settings.energy_source == 0 ? meter_state.power_w : hw_state.power_w;
+}
+/* Cumulative gas (m³) is only available from the HomeWizard P1; happ_pwrusage's
+ * HTTP path doesn't expose it. Returns <0 when unavailable. */
+static float energy_gas_m3(void) {
+    if (settings.energy_source == 1 && hw_state.connected_p1) return hw_state.gas_m3;
+    return -1.0f;
+}
+static const char * energy_offline_label(void) {
+    return settings.energy_source == 0 ? "meter offline" : "P1 offline";
+}
 
 /* ---------- tile builder helpers ---------- */
 typedef struct {
@@ -668,7 +690,7 @@ static void open_inbox(lv_event_t * e) {
  * Called once per refresh tick from refresh_cb. */
 static void apply_offline_tile_visibility(void) {
     int hide = settings.hide_offline_tiles;
-    int energy_live = settings.enable_p1_elec  && hw_state.connected_p1;
+    int energy_live = energy_connected();
     int water_live  = settings.enable_p1_water && hw_state.connected_water;
     int vent_live   = settings.enable_vent     && vent_state.connected;
     int family_live = settings.enable_ha;   /* family tile only needs the
@@ -960,13 +982,16 @@ static void refresh_cb(lv_timer_t * t) {
        has taken over this slot. */
     if (!slot_active[TILE_SLOT_ENERGY]) {
         if (lbl_energy_w) {
-            if (hw_state.connected_p1)
-                lv_label_set_text_fmt(lbl_energy_w, "%.0f W", hw_state.power_w);
+            if (energy_connected())
+                lv_label_set_text_fmt(lbl_energy_w, "%.0f W", energy_power_w());
             else
-                lv_label_set_text(lbl_energy_w, "P1 offline");
+                lv_label_set_text(lbl_energy_w, energy_offline_label());
         }
-        if (lbl_energy_gas && hw_state.connected_p1)
-            lv_label_set_text_fmt(lbl_energy_gas, "%.0f m3 gas", hw_state.gas_m3);
+        if (lbl_energy_gas) {
+            float g = energy_gas_m3();
+            if (g >= 0) lv_label_set_text_fmt(lbl_energy_gas, "%.0f m3 gas", g);
+            else if (energy_connected()) lv_label_set_text(lbl_energy_gas, "via meter");
+        }
     }
 
     /* Vent tile. Top-right line combines preset + remaining ("Auto", "High",
@@ -1107,11 +1132,15 @@ static void refresh_cb(lv_timer_t * t) {
 
     /* Energy bottom tile: live power + cumulative gas. */
     if (lbl_bot_energy) {
-        if (hw_state.connected_p1) {
-            lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                  hw_state.power_w, hw_state.gas_m3);
+        if (energy_connected()) {
+            float g = energy_gas_m3();
+            if (g >= 0)
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
+                                      energy_power_w(), g);
+            else
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_power_w());
         } else {
-            lv_label_set_text(lbl_bot_energy, "P1 offline");
+            lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }
     }
     if (lbl_bot_weather && lv_label_get_text(lbl_bot_weather)
@@ -1355,11 +1384,15 @@ static void refresh_cb(lv_timer_t * t) {
 
     /* Energy bottom tile: live power + cumulative gas. */
     if (lbl_bot_energy) {
-        if (hw_state.connected_p1) {
-            lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                  hw_state.power_w, hw_state.gas_m3);
+        if (energy_connected()) {
+            float g = energy_gas_m3();
+            if (g >= 0)
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
+                                      energy_power_w(), g);
+            else
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_power_w());
         } else {
-            lv_label_set_text(lbl_bot_energy, "P1 offline");
+            lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }
     }
     if (lbl_bot_weather && lv_label_get_text(lbl_bot_weather)
@@ -1466,11 +1499,15 @@ static void refresh_cb(lv_timer_t * t) {
 
     /* Energy bottom tile: live power + cumulative gas. */
     if (lbl_bot_energy) {
-        if (hw_state.connected_p1) {
-            lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                  hw_state.power_w, hw_state.gas_m3);
+        if (energy_connected()) {
+            float g = energy_gas_m3();
+            if (g >= 0)
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
+                                      energy_power_w(), g);
+            else
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_power_w());
         } else {
-            lv_label_set_text(lbl_bot_energy, "P1 offline");
+            lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }
     }
     /* (Old splat-recovered "(soon)" override block removed — it was
