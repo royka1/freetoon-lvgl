@@ -48,11 +48,20 @@ if [ "$SZ" -lt 500000 ]; then
 fi
 
 # 2) helper scripts — install only if missing so we never clobber local edits.
-for s in ui_launcher.sh companion_gate.sh ot_mode_switch.sh; do
+for s in ui_launcher.sh companion_gate.sh ot_mode_switch.sh toonvnc.sh; do
     if [ ! -f "$DEST/$s" ]; then
         dl "$s" "$TMP/$s" && cp "$TMP/$s" "$DEST/$s" && chmod +x "$DEST/$s"
     fi
 done
+
+# 2b) VNC input bridge — lets you control the Toon over VNC (injects remote
+# pointer events into the multi-touch screen). Without it VNC is view-only,
+# regardless of the x11vnc build. Always refresh (it's our compiled binary).
+if dl fbvnc_input "$TMP/fbvnc_input"; then
+    if [ "$(wc -c < "$TMP/fbvnc_input" 2>/dev/null || echo 0)" -gt 2000 ]; then
+        cp "$TMP/fbvnc_input" "$DEST/fbvnc_input" && chmod +x "$DEST/fbvnc_input"
+    fi
+fi
 
 # 3) swap the binary (back up the old one).
 [ -f "$DEST/toonui" ] && cp "$DEST/toonui" "$DEST/toonui.bak"
@@ -76,6 +85,19 @@ if [ -f "$DEST/ui_launcher.sh" ]; then
         grep -vE '^toon:|^flas:|/qmf/sbin/qt-gui|inittabwrap qt-gui' /etc/inittab \
             > /etc/inittab.new \
             && echo "$ROW" >> /etc/inittab.new \
+            && mv -f /etc/inittab.new /etc/inittab
+        telinit q 2>/dev/null || kill -HUP 1 2>/dev/null || true
+    fi
+fi
+
+# 4b) VNC respawn row — only if x11vnc + the input bridge are present, so VNC
+# gives full control (not view-only). Idempotent.
+if command -v x11vnc >/dev/null 2>&1 && [ -x "$DEST/toonvnc.sh" ] && [ -x "$DEST/fbvnc_input" ]; then
+    VROW="vncs:345:respawn:$DEST/toonvnc.sh respawn >> /var/volatile/tmp/x11vnc.log 2>&1"
+    if ! grep -qF "$VROW" /etc/inittab 2>/dev/null; then
+        say "enabling VNC (full control via fbvnc_input bridge) on :5900"
+        grep -v '^vncs:' /etc/inittab > /etc/inittab.new \
+            && echo "$VROW" >> /etc/inittab.new \
             && mv -f /etc/inittab.new /etc/inittab
         telinit q 2>/dev/null || kill -HUP 1 2>/dev/null || true
     fi

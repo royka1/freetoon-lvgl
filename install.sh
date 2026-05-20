@@ -91,13 +91,18 @@ check_artefacts() {
         echo "  missing PWA bundle: $PWA_DIR/index.html" >&2
         missing=1
     fi
-    [[ -x "$FBVNC_INPUT" ]] || echo "  note: $FBVNC_INPUT absent — VNC will be view-only" >&2
     (( missing )) && {
         echo >&2
         echo "If this is a release tarball, expand it first and run install.sh from inside it." >&2
         echo "If this is the dev tree, build toonui with 'make' in lvgl_ui_recovered/src/." >&2
+        echo "Or just run the one-liner ON the Toon (no local build needed):" >&2
+        echo "  curl -fsSL https://raw.githubusercontent.com/Ierlandfan/freetoon-lvgl/main/scripts/toon-selfinstall.sh | sh" >&2
         exit 3
     }
+    # Non-fatal: VNC just stays view-only without the input bridge. Printed
+    # only when the preflight otherwise passes, so it's never mistaken for the
+    # cause of an abort.
+    [[ -x "$FBVNC_INPUT" ]] || echo "  note: fbvnc_input absent — VNC will be view-only (not fatal)" >&2
 }
 
 do_install() {
