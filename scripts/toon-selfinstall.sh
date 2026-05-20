@@ -25,10 +25,12 @@ dl() {  # dl <asset> <out>
     curl -fSL --connect-timeout 8 --max-time 120 -o "$2" "$BASE/$1"
 }
 
-# 1) toonui binary (required) — validate it's an ARM ELF before installing.
+# 1) toonui binary (required) — sanity-check the size (a GitHub error page or
+# truncated download is tiny; the real binary is ~1 MB). busybox-safe.
 dl toonui "$TMP/toonui"
-if ! head -c 4 "$TMP/toonui" | od -An -tx1 | grep -qi '7f 45 4c 46'; then
-    say "ERROR: downloaded toonui is not an ELF binary — aborting."
+SZ=$(wc -c < "$TMP/toonui" 2>/dev/null || echo 0)
+if [ "$SZ" -lt 500000 ]; then
+    say "ERROR: toonui download too small ($SZ bytes) — aborting."
     rm -rf "$TMP"; exit 1
 fi
 
