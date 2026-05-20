@@ -124,6 +124,7 @@ static char ZWAVE_UUID[96]    = "qb-659918000101-2011A0LOHI:hdrv_zwave";
 static char NETCON_UUID[96]   = "qb-659918000101-2011A0LOHI:hcb_netcon";
 static char USERMSG_UUID[96]  = "qb-659918000101-2011A0LOHI:happ_usermsg";
 static char RRD_UUID[96]      = "qb-659918000101-2011A0LOHI:hcb_rrd";
+static char THERMD_UUID[96]   = "qb-659918000101-2011A0LOHI:happ_thermstat";
 
 static void bt_init_dev_uuids(void) {
     char hn[64] = {0};
@@ -134,6 +135,7 @@ static void bt_init_dev_uuids(void) {
     snprintf(NETCON_UUID,  sizeof NETCON_UUID,  "%s:hcb_netcon",  dev_base);
     snprintf(USERMSG_UUID, sizeof USERMSG_UUID, "%s:happ_usermsg",dev_base);
     snprintf(RRD_UUID,     sizeof RRD_UUID,     "%s:hcb_rrd",     dev_base);
+    snprintf(THERMD_UUID,  sizeof THERMD_UUID,  "%s:happ_thermstat", dev_base);
 }
 
 #define BUFCAP (64 * 1024)
@@ -447,6 +449,21 @@ static void handle_msg(const char* xml) {
         if (strstr(xml, "happ_usermsg") && strstr(xml, "UpdateDataSet")
             && strstr(xml, "notifications")) {
             inbox_parse_dataset(xml);
+        }
+        /* happ_thermstat thermostatInfo dataset — the native source for the
+         * calibrated room temp + humidity (the same push qt-gui consumes).
+         * currentTemp/currentSetpoint are centi-°C; currentHumidity is %. */
+        if (strstr(xml, "happ_thermstat") && strstr(xml, "UpdateDataSet")
+            && strstr(xml, "thermostatInfo")) {
+            float v;
+            if (elem_text_float(xml, "currentTemp", &v) && v > 0) {
+                toon_state.indoor_temp = (v > 80.0f) ? v / 100.0f : v;
+                toon_state.msg_count++;
+            }
+            if (elem_text_float(xml, "currentHumidity", &v) && v > 0)
+                toon_state.humidity = v;
+            if (elem_text_float(xml, "currentSetpoint", &v) && v > 0)
+                toon_state.setpoint = v / 100.0f;
         }
         /* Could be a response to our SetSetpoint — extract setpoint from response */
         if (strstr(xml, "ManualSetpoint") || strstr(xml, "SetSetpoint") || strstr(xml, "Setpoint")) {
@@ -779,6 +796,24 @@ static void send_initial_handshake(void) {
         OUR_UUID);
     send_msg(buf);
 
+    /* Subscribe to happ_thermstat's thermostatInfo dataset. This is how the
+     * stock qt-gui gets the calibrated room temperature + humidity (verified
+     * by sniffing qt-gui's BoxTalk traffic): happ_thermstat pushes an
+     * UpdateDataSet <thermostatInfo><currentTemp>NNNN</currentTemp>
+     * <currentHumidity>NN</currentHumidity>... on this subscription. The
+     * TemperatureSensor service only carries the uncalibrated ambient sensor
+     * (~3°C high), and there's no notify/queryable CurrentTemperature on the
+     * thermostat service — so this dataset is the real native source. */
+    snprintf(buf, sizeof(buf),
+        "<action class=\"invoke\" uuid=\"%s\" destuuid=\"%s\" "
+        "serviceid=\"urn:hcb-hae-com:serviceId:specific1\">"
+        "<u:UpdateDataSetSubscription xmlns:u=\"urn:hcb-hae-com:service:specific1:1\">"
+        "<updateAction>add</updateAction><dataSet>thermostatInfo</dataSet>"
+        "<autoExpire>0</autoExpire><supportsNaN>1</supportsNaN><supportsPartial>0</supportsPartial>"
+        "<requestFullSet>1</requestFullSet></u:UpdateDataSetSubscription></action>",
+        OUR_UUID, THERMD_UUID);
+    send_msg(buf);
+
     /* Subscribe to happ_usermsg notifications dataset (Inbox). */
     snprintf(buf, sizeof(buf),
         "<action class=\"invoke\" uuid=\"%s\" destuuid=\"%s\" "
@@ -925,16 +960,6 @@ static void* http_poll_thread(void* arg) {
                concurrent client changed it (cloud, web). Value is centi-°C. */
             int sp = parse_json_int(body, "currentSetpoint", 0);
             if (sp > 0) toon_state.setpoint = sp / 100.0f;
-            /* Calibrated room temperature (centi-°C). happ_thermstat only
-             * exposes this reliably via getThermostatInfo — verified on a
-             * second Toon that it neither emits a ThermostatInfo currentTemp
-             * notify nor answers a CurrentTemperature query addressed to the
-             * (device-specific) thermostat UUID. The notify/query path stays as
-             * a belt-and-braces seed for Toons that do publish it; this HTTP
-             * field is the device-agnostic source, read from a poll we already
-             * make every 3s for setpoint/burner/modulation. */
-            int ct = parse_json_int(body, "currentTemp", 0);
-            if (ct > 0) toon_state.indoor_temp = ct / 100.0f;
             /* OpenTherm health for the Heating settings modal. */
             toon_state.modulation_level = parse_json_int(body, "currentModulationLevel", toon_state.modulation_level);
             toon_state.ot_comm_error    = parse_json_int(body, "otCommError", toon_state.ot_comm_error);
