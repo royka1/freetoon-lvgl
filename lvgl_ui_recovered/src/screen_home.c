@@ -811,7 +811,11 @@ static int rotate_member_at(int n, char * out, size_t sz) {
 static void refresh_cb(lv_timer_t * t) {
     (void)t;
 
-    apply_offline_tile_visibility();
+    /* Only manage page-0 tile visibility while page 0 is showing — otherwise
+     * this would clear the HIDDEN flag on the page-0 tiles every tick and let
+     * them (e.g. the Family/Life360 tile) bleed through behind the page-2
+     * swipe slots. */
+    if (home_tile_page == 0) apply_offline_tile_visibility();
 
     /* Marketplace tile overrides — if a slot is bound, render the
      * integration's data into the matching tile's labels and remember
