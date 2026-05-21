@@ -34,6 +34,22 @@ if [ ! -x "$X11VNC" ]; then
   fi
 fi
 
+# Some Toon panels page-flip / pan the framebuffer: /dev/fb0 is double-height
+# (e.g. 1024x1200) and the *visible* image sits at a non-zero Y offset. x11vnc
+# -rawfb reads from byte 0 by default, so it would serve the stale back page
+# (a frozen screenshot). Compute the live offset from the kernel's pan info and
+# feed it to x11vnc. On non-panned panels (yoffset 0) this is a no-op.
+RAWFB="map:/dev/fb0@1024x600x32"
+_pan=$(cat /sys/class/graphics/fb0/pan 2>/dev/null)   # "xoff,yoff"
+_yoff=${_pan#*,}
+case "$_yoff" in ''|*[!0-9]*) _yoff=0;; esac
+_stride=$(cat /sys/class/graphics/fb0/stride 2>/dev/null)
+case "$_stride" in ''|*[!0-9]*) _stride=4096;; esac
+_off=$((_yoff * _stride))
+# x11vnc wants the byte offset AFTER the @WxHxB geometry, e.g.
+#   map:/dev/fb0@1024x600x32+2457600
+[ "$_off" -gt 0 ] && RAWFB="map:/dev/fb0@1024x600x32+$_off"
+
 case "${1:-start}" in
   stop)
     pkill -x x11vnc 2>/dev/null && echo "x11vnc stopped" || echo "x11vnc not running"
@@ -67,7 +83,7 @@ case "${1:-start}" in
       AUTH="-nopw"
     fi
     "$X11VNC" \
-      -rawfb map:/dev/fb0@1024x600x32 \
+      -rawfb "$RAWFB" \
       $PIPE \
       -rfbport $PORT -forever -shared -nocursor \
       -desktop ToonUI $AUTH \
@@ -95,7 +111,7 @@ case "${1:-start}" in
     # exec replaces the shell with x11vnc, so init sees x11vnc directly
     # (clean `pkill -x x11vnc` from the existing stop/restart actions).
     exec "$X11VNC" \
-      -rawfb map:/dev/fb0@1024x600x32 \
+      -rawfb "$RAWFB" \
       $PIPE \
       -rfbport $PORT -forever -shared -nocursor \
       -desktop ToonUI $AUTH
