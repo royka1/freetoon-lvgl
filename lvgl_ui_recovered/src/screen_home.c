@@ -2198,9 +2198,11 @@ void screen_home_open_news(void) { on_news_tap(NULL); }
  * We fetch a 2x2 block of OpenStreetMap raster tiles around their coordinate
  * (off the UI thread — downloads must never block LVGL) and overlay a marker.
  * A/B buttons switch between the two tracked people. */
-#define MAP_ZOOM 15
-typedef struct { float lat, lon; } map_req_t;
+#define MAP_TILE_DISP 200          /* on-screen px per 256px OSM tile (downscaled to fit) */
+typedef struct { float lat, lon; int zoom; } map_req_t;
 
+static int g_map_zoom   = 13;      /* OSM zoom level; lower = wider area / less detail */
+static int g_map_person = 0;       /* which tracked person is shown */
 static lv_obj_t  * map_modal    = NULL;
 static lv_obj_t  * map_box      = NULL;
 static lv_obj_t  * map_imgs[4]  = {0};
@@ -2213,7 +2215,7 @@ static volatile int g_map_mx = 256, g_map_my = 256;  /* marker px in the 512 box
 
 static void * map_fetch_thread(void * arg) {
     map_req_t r = *(map_req_t *)arg; free(arg);
-    int z = MAP_ZOOM, n = 1 << z;
+    int z = r.zoom, n = 1 << z;
     double latrad = r.lat * M_PI / 180.0;
     double fx = (r.lon + 180.0) / 360.0 * n;
     double fy = (1.0 - asinh(tan(latrad)) / M_PI) / 2.0 * n;
@@ -2248,16 +2250,24 @@ static void map_tick(lv_timer_t * t) {
     static const char * paths[4] = {
         "S:/tmp/map_0.png", "S:/tmp/map_1.png", "S:/tmp/map_2.png", "S:/tmp/map_3.png" };
     lv_img_cache_invalidate_src(NULL);            /* paths are reused — force reload */
-    for (int i = 0; i < 4; i++)
-        if (map_imgs[i]) lv_img_set_src(map_imgs[i], paths[i]);
+    for (int i = 0; i < 4; i++) {
+        if (!map_imgs[i]) continue;
+        lv_img_set_src(map_imgs[i], paths[i]);
+        lv_img_set_pivot(map_imgs[i], 0, 0);                  /* scale from top-left */
+        lv_img_set_zoom(map_imgs[i], MAP_TILE_DISP);          /* 256 = 100%; downscale to fit */
+        lv_obj_set_pos(map_imgs[i], (i % 2) * MAP_TILE_DISP, (i / 2) * MAP_TILE_DISP);
+    }
     if (map_marker) {
-        lv_obj_set_pos(map_marker, g_map_mx - 7, g_map_my - 7);
+        int mx = g_map_mx * MAP_TILE_DISP / 256;
+        int my = g_map_my * MAP_TILE_DISP / 256;
+        lv_obj_set_pos(map_marker, mx - 7, my - 7);
         lv_obj_clear_flag(map_marker, LV_OBJ_FLAG_HIDDEN);
     }
     if (map_status) lv_obj_add_flag(map_status, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void start_map_fetch(int person) {
+    g_map_person = person;
     float lat = person ? ha_state.lat_b : ha_state.lat_a;
     float lon = person ? ha_state.lon_b : ha_state.lon_a;
     const char * who = person
@@ -2276,7 +2286,7 @@ static void start_map_fetch(int person) {
     g_map_ready = 0;
     map_req_t * r = malloc(sizeof *r);
     if (!r) return;
-    r->lat = lat; r->lon = lon;
+    r->lat = lat; r->lon = lon; r->zoom = g_map_zoom;
     pthread_t th;
     if (pthread_create(&th, NULL, map_fetch_thread, r) == 0) pthread_detach(th);
     else { free(r); if (map_status) lv_label_set_text(map_status, "Kaart laden mislukt"); return; }
@@ -2292,6 +2302,8 @@ static void map_close(lv_event_t * e) {
 }
 static void on_map_a(lv_event_t * e) { (void)e; start_map_fetch(0); }
 static void on_map_b(lv_event_t * e) { (void)e; start_map_fetch(1); }
+static void on_map_zoom_in(lv_event_t * e)  { (void)e; if (g_map_zoom < 18) { g_map_zoom++; start_map_fetch(g_map_person); } }
+static void on_map_zoom_out(lv_event_t * e) { (void)e; if (g_map_zoom > 9)  { g_map_zoom--; start_map_fetch(g_map_person); } }
 
 static void open_family_map(lv_event_t * e) {
     (void)e;
@@ -2306,7 +2318,7 @@ static void open_family_map(lv_event_t * e) {
     lv_obj_add_event_cb(map_modal, map_close, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t * card = lv_obj_create(map_modal);
-    lv_obj_set_size(card, 700, 590);
+    lv_obj_set_size(card, 640, 500);
     lv_obj_center(card);
     lv_obj_set_style_bg_color(card, lv_color_hex(0x16243a), 0);
     lv_obj_set_style_radius(card, 16, 0);
@@ -2320,10 +2332,10 @@ static void open_family_map(lv_event_t * e) {
     lv_label_set_text(h, "Locatie");
     lv_obj_align(h, LV_ALIGN_TOP_LEFT, 16, 12);
 
-    /* 512x512 map area (2x2 tiles). */
+    /* Map area — 2x2 OSM tiles downscaled to MAP_TILE_DISP each. */
     map_box = lv_obj_create(card);
-    lv_obj_set_size(map_box, 512, 512);
-    lv_obj_align(map_box, LV_ALIGN_TOP_LEFT, 14, 54);
+    lv_obj_set_size(map_box, MAP_TILE_DISP * 2, MAP_TILE_DISP * 2);
+    lv_obj_align(map_box, LV_ALIGN_TOP_LEFT, 16, 52);
     lv_obj_set_style_bg_color(map_box, lv_color_hex(0x0e1a2a), 0);
     lv_obj_set_style_border_width(map_box, 0, 0);
     lv_obj_set_style_pad_all(map_box, 0, 0);
@@ -2331,7 +2343,7 @@ static void open_family_map(lv_event_t * e) {
     lv_obj_clear_flag(map_box, LV_OBJ_FLAG_SCROLLABLE);
     for (int i = 0; i < 4; i++) {
         map_imgs[i] = lv_img_create(map_box);
-        lv_obj_set_pos(map_imgs[i], (i % 2) * 256, (i / 2) * 256);
+        lv_obj_set_pos(map_imgs[i], (i % 2) * MAP_TILE_DISP, (i / 2) * MAP_TILE_DISP);
     }
     map_marker = lv_obj_create(map_box);
     lv_obj_set_size(map_marker, 14, 14);
@@ -2347,17 +2359,34 @@ static void open_family_map(lv_event_t * e) {
     lv_obj_center(map_status);
     lv_label_set_text(map_status, "Kaart laden...");
 
-    /* Right column: address + A/B switch + close. */
+    /* Right column: address + zoom + A/B switch + close. */
+    int px = 16 + MAP_TILE_DISP * 2 + 16;     /* just right of the map */
     map_addr_lbl = lv_label_create(card);
     lv_obj_set_style_text_color(map_addr_lbl, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(map_addr_lbl, &lv_font_montserrat_18, 0);
     lv_label_set_long_mode(map_addr_lbl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(map_addr_lbl, 150);
-    lv_obj_align(map_addr_lbl, LV_ALIGN_TOP_LEFT, 540, 58);
+    lv_obj_set_width(map_addr_lbl, 168);
+    lv_obj_align(map_addr_lbl, LV_ALIGN_TOP_LEFT, px, 56);
+
+    /* Zoom −/+ */
+    lv_obj_t * zo = lv_btn_create(card);
+    lv_obj_set_size(zo, 78, 56);
+    lv_obj_align(zo, LV_ALIGN_TOP_LEFT, px, 170);
+    lv_obj_add_event_cb(zo, on_map_zoom_out, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * zol = lv_label_create(zo);
+    lv_obj_set_style_text_font(zol, &lv_font_montserrat_28, 0);
+    lv_label_set_text(zol, LV_SYMBOL_MINUS); lv_obj_center(zol);
+    lv_obj_t * zi = lv_btn_create(card);
+    lv_obj_set_size(zi, 78, 56);
+    lv_obj_align(zi, LV_ALIGN_TOP_LEFT, px + 90, 170);
+    lv_obj_add_event_cb(zi, on_map_zoom_in, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * zil = lv_label_create(zi);
+    lv_obj_set_style_text_font(zil, &lv_font_montserrat_28, 0);
+    lv_label_set_text(zil, LV_SYMBOL_PLUS); lv_obj_center(zil);
 
     lv_obj_t * ba = lv_btn_create(card);
-    lv_obj_set_size(ba, 150, 50);
-    lv_obj_align(ba, LV_ALIGN_TOP_LEFT, 540, 200);
+    lv_obj_set_size(ba, 168, 50);
+    lv_obj_align(ba, LV_ALIGN_TOP_LEFT, px, 240);
     lv_obj_add_event_cb(ba, on_map_a, LV_EVENT_CLICKED, NULL);
     lv_obj_t * bal = lv_label_create(ba);
     lv_label_set_text(bal, settings.life360_a_name[0] ? settings.life360_a_name : "A");
@@ -2365,8 +2394,8 @@ static void open_family_map(lv_event_t * e) {
 
     if (settings.life360_b_entity[0]) {
         lv_obj_t * bb = lv_btn_create(card);
-        lv_obj_set_size(bb, 150, 50);
-        lv_obj_align(bb, LV_ALIGN_TOP_LEFT, 540, 262);
+        lv_obj_set_size(bb, 168, 50);
+        lv_obj_align(bb, LV_ALIGN_TOP_LEFT, px, 300);
         lv_obj_add_event_cb(bb, on_map_b, LV_EVENT_CLICKED, NULL);
         lv_obj_t * bbl = lv_label_create(bb);
         lv_label_set_text(bbl, settings.life360_b_name[0] ? settings.life360_b_name : "B");
