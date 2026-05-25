@@ -673,7 +673,12 @@ void screen_layout_editor_show(void) {
     if (g_layout.count == 0) layout_reset_default();
     edit = g_layout;
 
-    modal = lv_obj_create(lv_scr_act());
+    /* Build on the display's top layer, NOT lv_scr_act(): the editor is opened
+     * from the Settings page, which is scrollable — adding the modal to a
+     * scrolled screen placed it at the scrolled content origin, pushing the
+     * whole editor (incl. the bottom toolbar) up into the middle of the screen.
+     * The top layer is a fixed full-screen overlay unaffected by any scroll. */
+    modal = lv_obj_create(lv_layer_top());
     lv_obj_set_size(modal, SCR_W, SCR_H);
     lv_obj_set_pos(modal, 0, 0);
     lv_obj_set_style_bg_color(modal, lv_color_hex(0x0a121e), 0);
