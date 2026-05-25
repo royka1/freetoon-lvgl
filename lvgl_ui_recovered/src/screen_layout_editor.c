@@ -393,21 +393,27 @@ static void on_resize(lv_event_t * e) {
     if (sel < 0) return;
     int d = (int)(intptr_t)lv_event_get_user_data(e);   /* 0:w- 1:w+ 2:h- 3:h+ */
     layout_tile_t * t = &edit.tiles[sel];
-    int w = t->w, h = t->h;
+    int w = t->w, h = t->h, col = t->col, row = t->row;
     int mw, mh; layout_type_min(t->type, &mw, &mh);
     if (mw < 1) mw = 1;
     if (mh < 1) mh = 1;
-    if (d == 0 && w > mw) w--;            /* don't shrink below the type minimum */
-    if (d == 1 && t->col + w < LAYOUT_COLS) w++;
-    if (d == 2 && h > mh) h--;
-    if (d == 3 && t->row + h < LAYOUT_ROWS) h++;
-    if (w == t->w && h == t->h) {
+    if (d == 0 && w > mw) w--;                       /* W-: shrink from the right */
+    if (d == 1) {                                    /* W+: grow right, or left if at the edge */
+        if (col + w < LAYOUT_COLS) w++;
+        else if (col > 0) { col--; w++; }            /* right edge → extend leftward instead */
+    }
+    if (d == 2 && h > mh) h--;                        /* H- */
+    if (d == 3) {                                    /* H+: grow down, or up if at the edge */
+        if (row + h < LAYOUT_ROWS) h++;
+        else if (row > 0) { row--; h++; }
+    }
+    if (w == t->w && h == t->h && col == t->col && row == t->row) {
         lv_label_set_text(sel_lbl, "Kan niet verder - min. grootte of schermrand bereikt");
         return;
     }
     /* Re-pack the rest around the new size; revert if it can't be made to fit. */
     layout_t s = edit;
-    s.tiles[sel].w = w; s.tiles[sel].h = h;
+    s.tiles[sel].w = w; s.tiles[sel].h = h; s.tiles[sel].col = col; s.tiles[sel].row = row;
     if (layout_reflow_push(&s, sel)) {
         edit = s;
         for (int k = 0; k < edit.count; k++) if (rects[k]) place_rect(k);
