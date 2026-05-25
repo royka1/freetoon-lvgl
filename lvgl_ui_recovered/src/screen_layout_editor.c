@@ -27,9 +27,15 @@
 #  define SCR_W 1024
 #  define SCR_H 600
 #endif
-#define CELL_W (SCR_W / LAYOUT_COLS)
-#define CELL_H (SCR_H / LAYOUT_ROWS)
 #define BAR_H  64
+/* The editor canvas is the area ABOVE the toolbar, so a cell's height is based
+ * on (SCR_H - BAR_H): all LAYOUT_ROWS rows fit above the bar and nothing is
+ * hidden behind it. Width is unaffected (the bar is full-width at the bottom).
+ * Only the editor's preview scaling changes — the saved layout (grid units) and
+ * the real home rendering (layout_cell_px, full-screen) are untouched. */
+#define CANVAS_H (SCR_H - BAR_H)
+#define CELL_W (SCR_W / LAYOUT_COLS)
+#define CELL_H (CANVAS_H / LAYOUT_ROWS)
 
 static lv_obj_t * modal;
 static lv_obj_t * chooser;      /* the "+ Tegel" size/type palette, when open */
