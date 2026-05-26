@@ -174,6 +174,7 @@ static void rect_event(lv_event_t * e) {
         if (dx < 0) dx = -dx;
         if (dy < 0) dy = -dy;
         if (dx > 10 || dy > 10) drag_moved = 1;   /* moved enough → it's a drag */
+        if (!drag_moved) return;                  /* still a tap: don't preview/re-pack */
         /* Re-evaluate only when the snap target cell changes — cheap + smooth. */
         int col, row; snap_cell(i, &col, &row);
         if (col != drag_last_col || row != drag_last_row) {
@@ -193,10 +194,22 @@ static void rect_event(lv_event_t * e) {
             drag_last_col = drag_last_row = -1;
             return;
         }
+        if (!drag_moved) {                   /* a plain tap → just select, no move */
+            place_rect(i);                   /* undo any sub-threshold jitter */
+            select_tile(i);                  /* selection persists for the W+/H+ buttons */
+            drag_last_col = drag_last_row = -1;
+            return;
+        }
         int col, row; snap_cell(i, &col, &row);
         layout_t res;
         if (trial_move(i, col, row, &res)) edit = res;   /* commit re-packed layout */
         /* else: edit untouched → everything snaps back to where it was */
+        for (int k = 0; k < edit.count; k++) if (rects[k]) place_rect(k);
+        select_tile(i);
+        drag_last_col = drag_last_row = -1;
+    } else if (code == LV_EVENT_PRESS_LOST) {
+        /* touch interrupted mid-press: restore tiles + keep the selection, so we
+         * never leave a stuck green-border / half-dragged state. */
         for (int k = 0; k < edit.count; k++) if (rects[k]) place_rect(k);
         select_tile(i);
         drag_last_col = drag_last_row = -1;
@@ -417,6 +430,7 @@ static void on_resize(lv_event_t * e) {
     if (layout_reflow_push(&s, sel)) {
         edit = s;
         for (int k = 0; k < edit.count; k++) if (rects[k]) place_rect(k);
+        select_tile(sel);   /* keep the selection visible on the resized tile */
     }
     update_sel_label();
 }
