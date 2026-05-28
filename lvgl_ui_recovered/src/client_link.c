@@ -257,18 +257,19 @@ void client_link_apply_state(const char * j) {
         if (jint(j, "cal_connected", &v)) calendar_state.connected = v;
     }
 
-    /* ---- news ticker ---- */
+    /* ---- news ticker (title + link + body + feed) ---- */
     {
         const char * p = find_array(j, "news");
         int idx = 0;
-        char obj[600];
-        char title[NEWS_TITLE_MAX], link[NEWS_LINK_MAX];
+        char obj[NEWS_BODY_MAX + 400];   /* room for body + the other fields */
+        char title[NEWS_TITLE_MAX], link[NEWS_LINK_MAX], body[NEWS_BODY_MAX];
         while (p && idx < NEWS_MAX_ITEMS && walk_object(&p, obj, sizeof obj)) {
             int feed = -1;
             jstr(obj, "t", title, sizeof title);
             jstr(obj, "u", link,  sizeof link);
+            jstr(obj, "b", body,  sizeof body);
             jint(obj, "f", &feed);
-            news_set_item_data(idx, title, link, feed);
+            news_set_item_data(idx, title, link, body, feed);
             idx++;
         }
         if (p) news_set_count(idx);

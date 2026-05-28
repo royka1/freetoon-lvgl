@@ -25,7 +25,8 @@ int  news_body(int i, char * body, size_t bsz);
 /* Slave-bridge setters — let client_link_apply_state() replace the in-memory
  * list with what the master Toon publishes. Safe to call repeatedly. */
 void news_set_count(int n);
-void news_set_item_data(int i, const char * title, const char * link, int feed);
+void news_set_item_data(int i, const char * title, const char * link,
+                        const char * body, int feed);
 
 #define NEWS_MAX_FEEDS   8
 /* Per-feed grouping for the detailed reader. */

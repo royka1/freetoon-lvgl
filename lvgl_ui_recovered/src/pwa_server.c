@@ -296,18 +296,25 @@ static int render_state_json(char * body, size_t sz) {
     if (p < end) p += snprintf(p, end-p, "],\"cal_connected\":%d,",
         calendar_state.connected);
 
-    /* ---- news ticker (title + link + feed index) */
+    /* ---- news ticker (title + link + body + feed index)
+     * Body is the RSS <description> (HTML-stripped, up to ~900 chars). Without
+     * it the article-card view shows "geen samenvatting beschikbaar" on the
+     * WASM slave. Each item adds ~1 KB to the SSE frame; still well within the
+     * 32 KB body buffer with all 12 items. */
     if (p < end) p += snprintf(p, end-p, "\"news\":[");
     for (int i = 0, n = news_count(); i < n; i++) {
-        char title[NEWS_TITLE_MAX], link[NEWS_LINK_MAX];
-        char title_esc[NEWS_TITLE_MAX], link_esc[NEWS_LINK_MAX];
+        char title[NEWS_TITLE_MAX], link[NEWS_LINK_MAX], body[NEWS_BODY_MAX];
+        char title_esc[NEWS_TITLE_MAX], link_esc[NEWS_LINK_MAX], body_esc[NEWS_BODY_MAX];
         if (news_item(i, title, sizeof title, link, sizeof link) != 0) continue;
+        body[0] = 0;
+        news_body(i, body, sizeof body);
         json_strcpy(title_esc, title, sizeof title_esc);
         json_strcpy(link_esc,  link,  sizeof link_esc);
+        json_strcpy(body_esc,  body,  sizeof body_esc);
         if (i && p < end) *p++ = ',';
         if (p < end) p += snprintf(p, end-p,
-            "{\"t\":\"%s\",\"u\":\"%s\",\"f\":%d}",
-            title_esc, link_esc, news_item_feed(i));
+            "{\"t\":\"%s\",\"u\":\"%s\",\"b\":\"%s\",\"f\":%d}",
+            title_esc, link_esc, body_esc, news_item_feed(i));
     }
     if (p < end) p += snprintf(p, end-p, "],");
 

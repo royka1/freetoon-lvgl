@@ -187,6 +187,7 @@ int main(int argc, char * argv[]) {
     settings.enable_p1_elec = 1;
     settings.enable_ha      = 1;
     settings.enable_vent    = 1;   /* Itho — vent_state.connected comes via SSE */
+    settings.news_enabled   = 1;   /* RSS ticker — news_set_count/item from SSE */
     layout_load_named(settings.active_layout);
     tile_slots_init();
     seed_mock();
