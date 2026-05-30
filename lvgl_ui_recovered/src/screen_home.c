@@ -3003,6 +3003,8 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_color(lbl_waste_type, lv_color_hex(COL_TEXT_DIM), 0);
     lv_obj_set_style_text_font(lbl_waste_type, SF(18), 0);
     lv_label_set_text(lbl_waste_type, "");
+    lv_label_set_long_mode(lbl_waste_type, LV_LABEL_LONG_DOT);   /* long names ("Restafval+PMD…") dot-truncate, not clip */
+    lv_obj_set_width(lbl_waste_type, 144);
     lv_obj_align(lbl_waste_type, LV_ALIGN_TOP_LEFT, 72, 78);
 
     /* Second-pickup icon renders at native size — lv_img_set_zoom on an
@@ -3025,6 +3027,8 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_color(lbl_waste_type_2, lv_color_hex(COL_TEXT_DIM), 0);
     lv_obj_set_style_text_font(lbl_waste_type_2, SF(14), 0);
     lv_label_set_text(lbl_waste_type_2, "");
+    lv_label_set_long_mode(lbl_waste_type_2, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(lbl_waste_type_2, 144);
     lv_obj_align(lbl_waste_type_2, LV_ALIGN_TOP_LEFT, 72, 164);
 
     /* Live Energy tile (replaces the old Humidity tile — humidity is now
@@ -3070,6 +3074,13 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_color(lbl_boiler_state, lv_color_hex(COL_TEXT_HI), 0);
     lv_obj_set_style_text_font(lbl_boiler_state, SF(18), 0);
     lv_label_set_text(lbl_boiler_state, "-- %");
+    /* Bound the status to the right ~58% of the tile with dot-truncation so a
+     * long string ("Itho offline") can't run into the "Vent" title when the
+     * tile is narrow (custom layouts). Right-aligned so it still hugs the edge;
+     * adapts to the tile width, so the wide default tile is unchanged. */
+    lv_label_set_long_mode(lbl_boiler_state, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(lbl_boiler_state, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_width(lbl_boiler_state, LV_PCT(58));
     lv_obj_align(lbl_boiler_state, LV_ALIGN_TOP_RIGHT, -4, 14);
 
     /* Spinning fan: 80x80 TRUE_COLOR_ALPHA icon (color baked in). Rotated
