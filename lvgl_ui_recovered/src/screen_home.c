@@ -1590,21 +1590,17 @@ static void refresh_cb(lv_timer_t * t) {
                      (preset[0] >= 'a' && preset[0] <= 'z')
                          ? preset[0] - 'a' + 'A' : preset[0],
                      preset + 1);
-            /* Tag the mode with its source: " (toon)" when we issued the last
-             * command locally (within 90 s), so the user sees e.g. "Low (toon)"
-             * — the mode they set, from the Toon. */
-            const char * vsrc = (vent_local_press_ms != 0 &&
-                                 (lv_tick_get() - vent_local_press_ms) < 90000)
-                                 ? " (toon)" : "";
+            /* Title is just the mode ("Low"/"High"/"Auto"/"Timer 20m"). The
+             * source ("via API"/"via TOON") stays on the lower line only. */
             char vshown[32];
             if (vent_state.remaining_min > 0)
-                snprintf(vshown, sizeof vshown, "%s %dm%s",
-                         preset_pretty, vent_state.remaining_min, vsrc);
+                snprintf(vshown, sizeof vshown, "%s %dm",
+                         preset_pretty, vent_state.remaining_min);
             else
-                snprintf(vshown, sizeof vshown, "%s%s", preset_pretty, vsrc);
+                snprintf(vshown, sizeof vshown, "%s", preset_pretty);
             lv_label_set_text(lbl_boiler_state, vshown);
-            /* Proper scaling, no truncation: shrink the font so the mode label
-             * never collides with the "Vent" title in a narrow custom tile. */
+            /* Shrink the font (no truncation) so the mode label never collides
+             * with the "Vent" title in a narrow custom tile. */
             if (tile_vent)
                 fit_font(lbl_boiler_state, vshown,
                          lv_obj_get_content_width(tile_vent) - SX(64), 18);
