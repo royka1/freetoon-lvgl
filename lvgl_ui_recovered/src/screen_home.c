@@ -976,22 +976,24 @@ static void vent_apply_fan_anim(int rpm) {
     lv_anim_start(&a);
 }
 
-/* Map the SELECTED Itho preset (fan_info) to an intuitive display % and a
- * synthetic spin rpm. This unit's ExhFanSpeed % is broken (Error:16, often
- * stuck at 100) and its physical rpm is inverted (Low spins faster than High),
- * so the user saw "Low → 100% + fast spin". Driving the tile off the chosen
- * mode instead is intuitive and unit-independent: Low = low %/slow icon,
- * High = high %/fast icon. out_spin is fed to vent_apply_fan_anim (higher =
- * faster). Unknown preset → fall back to the raw sensor values. */
-static void vent_mode_display(int * out_pct, int * out_spin) {
-    char fi[16];
-    memcpy(fi, (const char *)vent_state.fan_info, sizeof fi);
-    fi[sizeof fi - 1] = 0;
-    if (vent_state.remaining_min > 0 || strcmp(fi, "timer") == 0) { *out_pct = 100; *out_spin = 2800; }
-    else if (strcmp(fi, "high") == 0)                             { *out_pct = 100; *out_spin = 2800; }
-    else if (strcmp(fi, "low")  == 0)                             { *out_pct = 30;  *out_spin = 900;  }
-    else if (strcmp(fi, "auto") == 0 || strcmp(fi, "medium") == 0){ *out_pct = 50;  *out_spin = 1500; }
-    else { *out_pct = vent_state.speed_pct; *out_spin = vent_state.fan_rpm; }
+/* Shrink a label's font (never grow) so `txt` fits within max_w px WITHOUT
+ * truncation — proper scaling for narrow custom tiles. Tries the enabled
+ * Montserrat ladder downward starting at the label's design size `base_px`;
+ * picks the largest that fits, falling back to the smallest. */
+static void fit_font(lv_obj_t * lbl, const char * txt, lv_coord_t max_w, int base_px) {
+    static const struct { int px; const lv_font_t * f; } L[] = {
+        { 28, &lv_font_montserrat_28 }, { 22, &lv_font_montserrat_22 },
+        { 20, &lv_font_montserrat_20 }, { 18, &lv_font_montserrat_18 },
+        { 14, &lv_font_montserrat_14 }, { 12, &lv_font_montserrat_12 },
+    };
+    if (!lbl || !txt || max_w < 1) return;
+    for (unsigned i = 0; i < sizeof L / sizeof L[0]; i++) {
+        if (L[i].px > base_px) continue;            /* never larger than the design size */
+        lv_point_t sz;
+        lv_txt_get_size(&sz, txt, L[i].f, 0, 0, LV_COORD_MAX, 0);
+        if (sz.x <= max_w) { lv_obj_set_style_text_font(lbl, L[i].f, 0); return; }
+    }
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
 }
 static void open_settings_action(void * ctx) {
     (void)ctx;
@@ -1498,6 +1500,9 @@ static void refresh_cb(lv_timer_t * t) {
             int mo = atoi(p1.date + 5), d = atoi(p1.date + 8);
             lv_label_set_text_fmt(lbl_waste_date, "%d-%d", d, mo);
             lv_label_set_text(lbl_waste_type, p1.labels);
+            if (tile_waste)   /* shrink to fit, never truncate, in narrow tiles */
+                fit_font(lbl_waste_type, p1.labels,
+                         lv_obj_get_content_width(tile_waste) - 80, 18);
             if (waste_icon_1) {
                 lv_img_set_src(waste_icon_1, waste_icon_for_label(p1.labels));
                 lv_obj_set_style_img_recolor(waste_icon_1,
@@ -1513,6 +1518,9 @@ static void refresh_cb(lv_timer_t * t) {
             int mo = atoi(p2.date + 5), d = atoi(p2.date + 8);
             lv_label_set_text_fmt(lbl_waste_date_2, "%d-%d", d, mo);
             lv_label_set_text(lbl_waste_type_2, p2.labels);
+            if (tile_waste)
+                fit_font(lbl_waste_type_2, p2.labels,
+                         lv_obj_get_content_width(tile_waste) - 80, 14);
             lv_img_set_src(waste_icon_2, waste_icon_for_label(p2.labels));
             lv_obj_set_style_img_recolor(waste_icon_2,
                 lv_color_hex(waste_accent_for_label(p2.labels)), 0);
@@ -1560,6 +1568,9 @@ static void refresh_cb(lv_timer_t * t) {
              * tile is already hidden by apply_offline_tile_visibility) but
              * make it obvious why no data is flowing. */
             lv_label_set_text(lbl_boiler_state, "Itho offline");
+            if (tile_vent)
+                fit_font(lbl_boiler_state, "Itho offline",
+                         lv_obj_get_content_width(tile_vent) - SX(64), 18);
             if (vent_btn_low)   lv_obj_set_style_border_width(vent_btn_low,   0, 0);
             if (vent_btn_high)  lv_obj_set_style_border_width(vent_btn_high,  0, 0);
             if (vent_btn_auto)  lv_obj_set_style_border_width(vent_btn_auto,  0, 0);
@@ -1579,11 +1590,24 @@ static void refresh_cb(lv_timer_t * t) {
                      (preset[0] >= 'a' && preset[0] <= 'z')
                          ? preset[0] - 'a' + 'A' : preset[0],
                      preset + 1);
+            /* Tag the mode with its source: " (toon)" when we issued the last
+             * command locally (within 90 s), so the user sees e.g. "Low (toon)"
+             * — the mode they set, from the Toon. */
+            const char * vsrc = (vent_local_press_ms != 0 &&
+                                 (lv_tick_get() - vent_local_press_ms) < 90000)
+                                 ? " (toon)" : "";
+            char vshown[32];
             if (vent_state.remaining_min > 0)
-                lv_label_set_text_fmt(lbl_boiler_state, "%s %dm",
-                                      preset_pretty, vent_state.remaining_min);
+                snprintf(vshown, sizeof vshown, "%s %dm%s",
+                         preset_pretty, vent_state.remaining_min, vsrc);
             else
-                lv_label_set_text(lbl_boiler_state, preset_pretty);
+                snprintf(vshown, sizeof vshown, "%s%s", preset_pretty, vsrc);
+            lv_label_set_text(lbl_boiler_state, vshown);
+            /* Proper scaling, no truncation: shrink the font so the mode label
+             * never collides with the "Vent" title in a narrow custom tile. */
+            if (tile_vent)
+                fit_font(lbl_boiler_state, vshown,
+                         lv_obj_get_content_width(tile_vent) - SX(64), 18);
 
             /* Highlight whichever preset button matches the current fan_info
              * (Timer wins when a countdown is running). White border = active,
@@ -1638,24 +1662,24 @@ static void refresh_cb(lv_timer_t * t) {
                 (lv_tick_get() - vent_local_press_ms) < 90000) {
                 src_tag = "TOON";
             }
-            int mode_pct, mode_spin; vent_mode_display(&mode_pct, &mode_spin);
-            (void)mode_spin;
+            /* Show the HONEST actual airflow: vent_state.speed_pct is derived
+             * from the real fan rpm (ExhFanSpeed is broken/0, and the wire
+             * setpoint lies — it reads 100% for the wire-"high" command which
+             * on this unit is the LOW-airflow direction). */
             lv_label_set_text_fmt(lbl_boiler_pressure,
                                   "%d%%  %drpm\nvia %s",
-                                  mode_pct,            /* mode-driven, not the broken ExhFanSpeed % */
-                                  vent_state.fan_rpm,  /* real rpm kept as a diagnostic */
+                                  vent_state.speed_pct,
+                                  vent_state.fan_rpm,
                                   src_tag);
         } else {
             lv_label_set_text(lbl_boiler_pressure, "-- %");
         }
     }
-    /* Spin speed follows the SELECTED MODE (Low = slow, High = fast), not the
-       raw fan_rpm — on this unit Low actually reports higher rpm than High, so
-       an rpm-driven icon spins the wrong way ("Low spins fast"). */
-    if (vent_state.connected) {
-        int mp, ms; vent_mode_display(&mp, &ms);
-        vent_apply_fan_anim(ms);
-    }
+    /* Spin tracks the real fan rpm. With the wire swap, user-Low maps to the
+       low-airflow direction (~700 rpm → slow) and user-High to high (~2500 rpm
+       → fast), so the icon spins intuitively without faking it. */
+    if (vent_state.connected)
+        vent_apply_fan_anim(vent_state.fan_rpm);
 
     /* Curtains tile — state + position + battery from the HA poller.
        Spinner is shown only while actively moving; the position bar always
@@ -3025,8 +3049,6 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_color(lbl_waste_type, lv_color_hex(COL_TEXT_DIM), 0);
     lv_obj_set_style_text_font(lbl_waste_type, SF(18), 0);
     lv_label_set_text(lbl_waste_type, "");
-    lv_label_set_long_mode(lbl_waste_type, LV_LABEL_LONG_DOT);   /* long names ("Restafval+PMD…") dot-truncate, not clip */
-    lv_obj_set_width(lbl_waste_type, 144);
     lv_obj_align(lbl_waste_type, LV_ALIGN_TOP_LEFT, 72, 78);
 
     /* Second-pickup icon renders at native size — lv_img_set_zoom on an
@@ -3035,7 +3057,9 @@ lv_obj_t * screen_home_create(void) {
     waste_icon_2 = lv_img_create(waste_big.tile);
     lv_img_set_src(waste_icon_2, &icon_trash);
     lv_obj_set_style_img_recolor_opa(waste_icon_2, 255, 0);
-    lv_obj_align(waste_icon_2, LV_ALIGN_TOP_LEFT, 4, 128);
+    /* 2nd-pickup row anchored to the tile BOTTOM so it never clips off the
+     * edge in a short custom tile (it stays within bounds at any tile height). */
+    lv_obj_align(waste_icon_2, LV_ALIGN_BOTTOM_LEFT, 4, -36);
     lv_obj_add_flag(waste_icon_2, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_flag(waste_icon_2, LV_OBJ_FLAG_HIDDEN);
 
@@ -3043,15 +3067,13 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_color(lbl_waste_date_2, lv_color_hex(COL_TEXT_DIM), 0);
     lv_obj_set_style_text_font(lbl_waste_date_2, SF(22), 0);
     lv_label_set_text(lbl_waste_date_2, "");
-    lv_obj_align(lbl_waste_date_2, LV_ALIGN_TOP_LEFT, 72, 130);
+    lv_obj_align(lbl_waste_date_2, LV_ALIGN_BOTTOM_LEFT, 72, -30);
 
     lbl_waste_type_2 = lv_label_create(waste_big.tile);
     lv_obj_set_style_text_color(lbl_waste_type_2, lv_color_hex(COL_TEXT_DIM), 0);
     lv_obj_set_style_text_font(lbl_waste_type_2, SF(14), 0);
     lv_label_set_text(lbl_waste_type_2, "");
-    lv_label_set_long_mode(lbl_waste_type_2, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(lbl_waste_type_2, 144);
-    lv_obj_align(lbl_waste_type_2, LV_ALIGN_TOP_LEFT, 72, 164);
+    lv_obj_align(lbl_waste_type_2, LV_ALIGN_BOTTOM_LEFT, 72, -8);
 
     /* Live Energy tile (replaces the old Humidity tile — humidity is now
        on the Heater bottom strip). Big live power on top, gas total below,
@@ -3096,14 +3118,7 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_color(lbl_boiler_state, lv_color_hex(COL_TEXT_HI), 0);
     lv_obj_set_style_text_font(lbl_boiler_state, SF(18), 0);
     lv_label_set_text(lbl_boiler_state, "-- %");
-    /* Bound the status to the right ~58% of the tile with dot-truncation so a
-     * long string ("Itho offline") can't run into the "Vent" title when the
-     * tile is narrow (custom layouts). Right-aligned so it still hugs the edge;
-     * adapts to the tile width, so the wide default tile is unchanged. */
-    lv_label_set_long_mode(lbl_boiler_state, LV_LABEL_LONG_DOT);
-    lv_obj_set_style_text_align(lbl_boiler_state, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_width(lbl_boiler_state, LV_PCT(58));
-    lv_obj_align(lbl_boiler_state, LV_ALIGN_TOP_RIGHT, -4, 14);
+    lv_obj_align(lbl_boiler_state, LV_ALIGN_TOP_RIGHT, -4, 14);   /* font auto-fit at refresh */
 
     /* Spinning fan: 80x80 TRUE_COLOR_ALPHA icon (color baked in). Rotated
        directly with lv_img_set_angle — works reliably on this format.
