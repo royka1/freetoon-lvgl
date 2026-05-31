@@ -347,13 +347,23 @@ static lv_obj_t * modal_open(const char * title, int panel_h) {
     lv_obj_add_event_cb(cur_modal, modal_close, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t * panel = lv_obj_create(cur_modal);
-    lv_obj_set_size(panel, SX(860), SY(panel_h));
+    /* Clamp height to screen minus margin so the panel doesn't run off the
+     * bottom. Always enable vertical scrolling — even when content nominally
+     * fits — to stop scroll events propagating to the scrollable settings
+     * screen behind the backdrop (especially on Toon 1 at 480px). */
+    int h = SY(panel_h);
+    if (h > DISP_VER - SUNI(20))
+        h = DISP_VER - SUNI(20);
+    lv_obj_add_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(panel, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(panel, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_size(panel, SX(860), h);
     lv_obj_center(panel);
     lv_obj_set_style_bg_color(panel, lv_color_hex(0x16243a), 0);
     lv_obj_set_style_border_width(panel, 0, 0);
     lv_obj_set_style_radius(panel, 18, 0);
     lv_obj_set_style_pad_all(panel, 20, 0);
-    lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_bottom(panel, SUNI(40), 0);
     lv_obj_add_flag(panel, LV_OBJ_FLAG_CLICKABLE);              /* stop taps reaching backdrop */
 
     lv_obj_t * t = lv_label_create(panel);
@@ -586,10 +596,10 @@ static void open_weather_modal(lv_event_t * e) {
     lv_obj_set_style_text_color(lbl_city, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lbl_city, SF(22), 0);
     lv_label_set_text(lbl_city, "City:");
-    lv_obj_align(lbl_city, LV_ALIGN_TOP_LEFT, SX(4), y);
+    lv_obj_align(lbl_city, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     ta_wx_city = lv_textarea_create(p);
     lv_obj_set_size(ta_wx_city, SX(380), SY(44));
-    lv_obj_align(ta_wx_city, LV_ALIGN_TOP_LEFT, SX(240), y - 4);
+    lv_obj_align(ta_wx_city, LV_ALIGN_TOP_LEFT, SX(240), SY(y - 4));
     lv_textarea_set_one_line(ta_wx_city, true);
     lv_textarea_set_text(ta_wx_city, settings.weather_location);
     y += 60;
@@ -598,10 +608,10 @@ static void open_weather_modal(lv_event_t * e) {
     lv_obj_set_style_text_color(lbl_id, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lbl_id, SF(22), 0);
     lv_label_set_text(lbl_id, "Buienradar id:");
-    lv_obj_align(lbl_id, LV_ALIGN_TOP_LEFT, SX(4), y);
+    lv_obj_align(lbl_id, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     ta_wx_id = lv_textarea_create(p);
     lv_obj_set_size(ta_wx_id, SX(380), SY(44));
-    lv_obj_align(ta_wx_id, LV_ALIGN_TOP_LEFT, SX(240), y - 4);
+    lv_obj_align(ta_wx_id, LV_ALIGN_TOP_LEFT, SX(240), SY(y - 4));
     lv_textarea_set_one_line(ta_wx_id, true);
     lv_textarea_set_accepted_chars(ta_wx_id, "0123456789");
     char id_str[16]; snprintf(id_str, sizeof id_str, "%d",
@@ -617,12 +627,12 @@ static void open_weather_modal(lv_event_t * e) {
         "Find your city's id in the URL on buienradar.nl/weer/<city>/nl/<ID>\n"
         "(e.g. Medemblik = 2751073, De Bilt = 2757783). Plain KNMI codes\n"
         "won't work — these are GeoNames ids.");
-    lv_obj_align(hint, LV_ALIGN_TOP_LEFT, SX(4), y);
+    lv_obj_align(hint, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     y += 70;
 
     lv_obj_t * btn = lv_btn_create(p);
     lv_obj_set_size(btn, SX(200), SY(50));
-    lv_obj_align(btn, LV_ALIGN_TOP_LEFT, SX(4), y);
+    lv_obj_align(btn, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x3a6090), 0);
     lv_obj_add_event_cb(btn, on_weather_apply, LV_EVENT_CLICKED, NULL);
     lv_obj_t * bl = lv_label_create(btn);
@@ -634,7 +644,7 @@ static void open_weather_modal(lv_event_t * e) {
     lv_obj_set_style_text_color(lbl_wx_status, lv_color_hex(0x9fc4e6), 0);
     lv_obj_set_style_text_font(lbl_wx_status, SF(18), 0);
     lv_label_set_text(lbl_wx_status, "");
-    lv_obj_align(lbl_wx_status, LV_ALIGN_TOP_LEFT, SX(220), y + 12);
+    lv_obj_align(lbl_wx_status, LV_ALIGN_TOP_LEFT, SX(220), SY(y + 12));
 }
 
 static lv_obj_t * lbl_waste_status = NULL;
@@ -719,13 +729,10 @@ static lv_obj_t * waste_field(lv_obj_t * p, int x, int y, int w, const char * lb
     lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(l, SF(18), 0);
     lv_label_set_text(l, lbl);
-    /* Scale horizontally so fields fit the narrower 800px panel, but keep the
-     * vertical layout in design space — the modal panel scrolls, so preserving
-     * the proven row rhythm avoids labels/fields colliding on the short panel. */
-    lv_obj_align(l, LV_ALIGN_TOP_LEFT, SX(x), y);
+    lv_obj_align(l, LV_ALIGN_TOP_LEFT, SX(x), SY(y));
     lv_obj_t * ta = lv_textarea_create(p);
-    lv_obj_set_size(ta, SX(w), 44);
-    lv_obj_align(ta, LV_ALIGN_TOP_LEFT, SX(x), y + 26);
+    lv_obj_set_size(ta, SX(w), SY(44));
+    lv_obj_align(ta, LV_ALIGN_TOP_LEFT, SX(x), SY(y + 26));
     lv_textarea_set_one_line(ta, true);
     lv_textarea_set_text(ta, val ? val : "");
     return ta;
@@ -758,11 +765,11 @@ static void open_waste_modal(lv_event_t * e) {
     lv_obj_set_style_text_color(lp, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lp, SF(22), 0);
     lv_label_set_text(lp, "Afvalverwerker (provider):");
-    lv_obj_align(lp, LV_ALIGN_TOP_LEFT, SX(4), y);
+    lv_obj_align(lp, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     waste_load_providers();
     dd_waste_prov = lv_dropdown_create(p);
     lv_obj_set_width(dd_waste_prov, SX(720));
-    lv_obj_align(dd_waste_prov, LV_ALIGN_TOP_LEFT, SX(4), y + 30);
+    lv_obj_align(dd_waste_prov, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 30));
     if (g_prov_count) {
         lv_dropdown_set_options(dd_waste_prov, g_prov_opts);
         for (int i = 0; i < g_prov_count; i++)
@@ -787,7 +794,7 @@ static void open_waste_modal(lv_event_t * e) {
 
     lv_obj_t * apply = lv_btn_create(p);
     lv_obj_set_size(apply, SX(200), SY(50));
-    lv_obj_align(apply, LV_ALIGN_TOP_LEFT, SX(4), y);
+    lv_obj_align(apply, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     lv_obj_set_style_bg_color(apply, lv_color_hex(0x2e6e3a), 0);
     lv_obj_add_event_cb(apply, on_waste_apply, LV_EVENT_CLICKED, NULL);
     lv_obj_t * al = lv_label_create(apply); lv_label_set_text(al, "Opslaan"); lv_obj_center(al);
@@ -798,7 +805,7 @@ static void open_waste_modal(lv_event_t * e) {
     lv_obj_set_width(lbl_waste_status, SX(736));
     lv_label_set_long_mode(lbl_waste_status, LV_LABEL_LONG_WRAP);
     lv_label_set_text(lbl_waste_status, "Kies een provider en vul de velden die deze nodig heeft.");
-    lv_obj_align(lbl_waste_status, LV_ALIGN_TOP_LEFT, SX(220), y + 8);
+    lv_obj_align(lbl_waste_status, LV_ALIGN_TOP_LEFT, SX(220), SY(y + 8));
 }
 
 static void open_heating_modal(lv_event_t * e) {
@@ -815,7 +822,7 @@ static void open_heating_modal(lv_event_t * e) {
     /* boiler control type */
     lv_obj_t * box = lv_obj_create(p);
     lv_obj_set_size(box, SX(800), SY(200));
-    lv_obj_align(box, LV_ALIGN_TOP_LEFT, SX(4), y);
+    lv_obj_align(box, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     lv_obj_set_style_bg_color(box, lv_color_hex(0x1f3050), 0);
     lv_obj_set_style_border_width(box, 0, 0);
     lv_obj_set_style_radius(box, 12, 0);

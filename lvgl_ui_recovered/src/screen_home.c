@@ -100,18 +100,15 @@ static lv_obj_t * lbl_outside_sub;
 static lv_obj_t * fc_day_lbl[WEATHER_FORECAST_DAYS];
 static lv_obj_t * fc_temp_lbl[WEATHER_FORECAST_DAYS];
 static lv_obj_t * fc_wind_lbl[WEATHER_FORECAST_DAYS];
+static lv_obj_t * fc_desc_lbl[WEATHER_FORECAST_DAYS];
+static lv_obj_t * fc_wind_arrow[WEATHER_FORECAST_DAYS];
 static lv_obj_t * fc_icon[WEATHER_FORECAST_DAYS];
 static lv_obj_t * envelope_btn;
 static lv_obj_t * envelope_badge;
 static lv_obj_t * envelope_badge_lbl;
-static lv_obj_t * water_spinner;
-static lv_obj_t * forecast_box;
-static lv_obj_t * lbl_outside_main;
-static lv_obj_t * lbl_outside_sub;
-static lv_obj_t * fc_day_lbl[WEATHER_FORECAST_DAYS];
-static lv_obj_t * fc_temp_lbl[WEATHER_FORECAST_DAYS];
-static lv_obj_t * fc_wind_lbl[WEATHER_FORECAST_DAYS];
-static lv_obj_t * fc_icon[WEATHER_FORECAST_DAYS];
+static lv_obj_t * lbl_forecast_city = NULL;
+static lv_obj_t * lbl_life360_a = NULL;
+static lv_obj_t * lbl_life360_b = NULL;
 /* Bicolor partly-cloudy overlay — yellow sun layered on top of the
  * white cloud for 'b'/'j' Buienradar codes. Hidden for all other codes;
  * set_forecast_icon() manages visibility + src + recolor. */
@@ -193,27 +190,6 @@ static const lv_font_t * font_for(int px) {
     if (px >= 14) return &lv_font_montserrat_14;
     return &lv_font_montserrat_12;
 }
-
-static lv_obj_t * water_spinner;
-static lv_obj_t * forecast_box;
-static lv_obj_t * lbl_forecast_city = NULL;
-static lv_obj_t * lbl_life360_a = NULL;
-static lv_obj_t * lbl_life360_b   = NULL;
-static lv_obj_t * lbl_outside_main;
-static lv_obj_t * lbl_outside_sub;
-static lv_obj_t * fc_day_lbl[WEATHER_FORECAST_DAYS];
-static lv_obj_t * fc_temp_lbl[WEATHER_FORECAST_DAYS];
-static lv_obj_t * fc_desc_lbl[WEATHER_FORECAST_DAYS];
-static lv_obj_t * fc_wind_arrow[WEATHER_FORECAST_DAYS];
-static lv_obj_t * lbl_inbox_main;
-static lv_obj_t * lbl_inbox_sub;
-/* Bottom-row labels (Energy/Weather/Waste) — updated by refresh_cb */
-static lv_obj_t * lbl_bot_energy;
-static lv_obj_t * lbl_bot_weather;
-static lv_obj_t * lbl_bot_waste;
-static lv_obj_t * tile_img_flame;
-static lv_obj_t * tile_img_faucet;
-static lv_obj_t * tile_img_drop;
 
 /* Whole-tile pointers so refresh_cb can flip their offline labels or
  * hide them entirely based on the matching enable_* flag +
