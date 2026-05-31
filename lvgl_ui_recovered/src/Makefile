@@ -13,7 +13,7 @@
 # Device builds use main.c + the fbdev/evdev drivers; the headless `sim` builds
 # swap in sim.c (offscreen framebuffer → PPM) and drop the hardware drivers.
 ENTRY      := main.c
-LVDRV_SRC  := lv_drivers/display/fbdev.c lv_drivers/indev/evdev.c
+LVDRV_SRC  := fbdev.c lv_drivers/indev/evdev.c
 EXTRA      :=
 # (EXTRA is set per-target in the branches below; it needs BUILDDIR.)
 

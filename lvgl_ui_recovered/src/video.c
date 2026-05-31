@@ -44,7 +44,7 @@ void video_install_button(lv_obj_t * parent) { (void)parent; }
 
 #include "display.h"
 #include "settings.h"
-#include "lv_drivers/display/fbdev.h"
+#include "fbdev.h"
 
 #include <stdio.h>
 #include <stdlib.h>
