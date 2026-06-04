@@ -515,8 +515,12 @@ static void refresh_cb(lv_timer_t * t) {
                 const char * when = (days_until == 0) ? "Vandaag" : (days_until == 1) ? "Morgen" : NULL;
                 if (when) lv_label_set_text_fmt(lbl_waste, "%s: %s", when, l_clean);
                 else {
+                    static const char * const nl_month[12] = {
+                        "januari", "februari", "maart", "april", "mei", "juni",
+                        "juli", "augustus", "september", "oktober", "november", "december"};
                     int mo = atoi(wp.date + 5), dy = atoi(wp.date + 8);
-                    lv_label_set_text_fmt(lbl_waste, "%d-%d: %s", dy, mo, l_clean);
+                    const char * mn = (mo >= 1 && mo <= 12) ? nl_month[mo - 1] : "";
+                    lv_label_set_text_fmt(lbl_waste, "%d %s: %s", dy, mn, l_clean);
                 }
             } else {
                 lv_img_set_src(waste_icon, &icon_trash_lg);
@@ -798,7 +802,9 @@ lv_obj_t * screen_dim_create(void) {
     lv_obj_set_width(lbl_waste, SX(260));
     lv_obj_set_style_text_align(lbl_waste, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(lbl_waste, LV_LABEL_LONG_WRAP);
-    lv_obj_align(lbl_waste, LV_ALIGN_TOP_LEFT, SX(10), SY(237));
+    /* Centre the label box on the 80px (native, un-scaled) trash icon so the
+       centred text sits directly under the icon on both targets. */
+    lv_obj_align(lbl_waste, LV_ALIGN_TOP_LEFT, SX(100) + 40 - SX(260) / 2, SY(237));
 
     /* (City header above forecast strip removed — location moved under wx icon) */
     dim_lbl_city = NULL;
