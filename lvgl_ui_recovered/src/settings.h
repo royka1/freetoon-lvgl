@@ -8,7 +8,18 @@ typedef struct {
     int auto_home_seconds;    /* 5..600 — idle timeout before auto-returning home */
     int active_brightness;    /* 0..1000 backlight when active */
     int dim_brightness;       /* 0..1000 backlight while dimmed */
-    int auto_brightness;      /* 0/1 — follow the LTR-303 ambient sensor (Toon 2) */
+    int auto_brightness;      /* 0/1 — Toon 2: follow the LTR-303 ambient sensor */
+
+    /* Night mode — scale the backlight to night_pct% of normal during night
+     * hours. night_source: 0 = fixed LOCAL time range [night_start,night_end),
+     * 1 = local sunset->sunrise (geocoded from weather_location). Times are
+     * minutes-of-day (0..1439). Applies on both Toons (on Toon 2 it scales on
+     * top of the light sensor). */
+    int night_mode;           /* 0/1 — enable night dimming */
+    int night_source;         /* 0 = fixed time range, 1 = sunset->sunrise */
+    int night_start;          /* minutes-of-day — range start (default 22:00) */
+    int night_end;            /* minutes-of-day — range end   (default 07:00) */
+    int night_pct;            /* 1..100 — night brightness as % of day brightness */
 
     /* Toon 1 TSC2007 touch panel alignment. Resistive panels are mounted any-
      * which-way; these three booleans cover all 8 orientations. Tweak in

@@ -16,6 +16,11 @@ settings_t settings = {
     .auto_home_seconds = 60,
     .active_brightness = 800,
     .dim_brightness    = 80,
+    .night_mode        = 0,
+    .night_source      = 1,         /* sunset->sunrise (default) */
+    .night_start       = 22 * 60,   /* 22:00 */
+    .night_end         = 7 * 60,    /* 07:00 */
+    .night_pct         = 30,        /* 30% of day brightness */
     .temp_offset_centi = 0,
     .show_dim_weather  = 1,
     .show_dim_waste    = 1,
@@ -179,6 +184,11 @@ void settings_load(void) {
         else if (strcmp(k, "active_brightness") == 0) settings.active_brightness = iv;
         else if (strcmp(k, "dim_brightness")    == 0) settings.dim_brightness    = iv;
         else if (strcmp(k, "auto_brightness")   == 0) settings.auto_brightness   = iv;
+        else if (strcmp(k, "night_mode")        == 0) settings.night_mode        = iv;
+        else if (strcmp(k, "night_source")      == 0) settings.night_source      = iv;
+        else if (strcmp(k, "night_start")       == 0) settings.night_start       = iv;
+        else if (strcmp(k, "night_end")         == 0) settings.night_end         = iv;
+        else if (strcmp(k, "night_pct")         == 0) settings.night_pct         = iv;
         else if (strcmp(k, "touch_swap_xy")     == 0) settings.touch_swap_xy     = iv;
         else if (strcmp(k, "touch_invert_x")    == 0) settings.touch_invert_x    = iv;
         else if (strcmp(k, "touch_invert_y")    == 0) settings.touch_invert_y    = iv;
@@ -528,6 +538,11 @@ void settings_save(void) {
     fprintf(f, "active_brightness=%d\n", settings.active_brightness);
     fprintf(f, "dim_brightness=%d\n",    settings.dim_brightness);
     fprintf(f, "auto_brightness=%d\n",   settings.auto_brightness);
+    fprintf(f, "night_mode=%d\n",        settings.night_mode);
+    fprintf(f, "night_source=%d\n",      settings.night_source);
+    fprintf(f, "night_start=%d\n",       settings.night_start);
+    fprintf(f, "night_end=%d\n",         settings.night_end);
+    fprintf(f, "night_pct=%d\n",         settings.night_pct);
     fprintf(f, "touch_swap_xy=%d\n",     settings.touch_swap_xy);
     fprintf(f, "touch_invert_x=%d\n",    settings.touch_invert_x);
     fprintf(f, "touch_invert_y=%d\n",    settings.touch_invert_y);

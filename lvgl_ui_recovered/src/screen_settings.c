@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <ifaddrs.h>
@@ -58,6 +59,14 @@ static lv_obj_t * sw_dim_wx;
 static lv_obj_t * sl_forecast_mode, * lbl_forecast_mode;
 static lv_obj_t * sw_dim_waste;
 static lv_obj_t * sw_dim_bars, * sw_dim_bars_swap;
+/* Night-mode modal widgets. */
+static lv_obj_t * sw_night;
+static lv_obj_t * sw_night_src;
+static lv_obj_t * sl_night_start, * lbl_night_start, * row_night_start;
+static lv_obj_t * sl_night_end,   * lbl_night_end,   * row_night_end;
+static lv_obj_t * sl_night_pct,   * lbl_night_pct,   * row_night_pct;
+static lv_obj_t * lbl_night_hint;
+static lv_obj_t * lbl_night_summary;   /* on/off label shown in the Display modal */
 static lv_obj_t * sl_waste_lead, * lbl_waste_lead;
 static lv_obj_t * sl_offset,   * lbl_offset_val;
 static lv_obj_t * sw_boiler;
@@ -529,6 +538,125 @@ static void about_tick(void) {
 
 /* ============================ category modals ============================ */
 
+/* ---------------------------- Night mode modal --------------------------- */
+static const char * night_hhmm(int minutes, char * buf, size_t n) {
+    if (minutes < 0) minutes = 0;
+    minutes %= 1440;
+    snprintf(buf, n, "%02d:%02d", minutes / 60, minutes % 60);
+    return buf;
+}
+
+/* Live hint (refreshed by the modal timer): in sunset mode show the fetched
+ * sunrise/sunset in LOCAL time, or a fetching note until they land. */
+static void night_tick(void) {
+    if (!lbl_night_hint || settings.night_source != 1) return;
+    long sr = 0, ss = 0;
+    backlight_sun_times(&sr, &ss);
+    if (!sr || !ss) {
+        lv_label_set_text(lbl_night_hint, "Fetching sunrise/sunset...");
+        return;
+    }
+    char a[8], bb[8];
+    time_t tsr = (time_t)sr, tss = (time_t)ss;
+    struct tm lt;
+    localtime_r(&tsr, &lt); snprintf(a,  sizeof a,  "%02d:%02d", lt.tm_hour, lt.tm_min);
+    localtime_r(&tss, &lt); snprintf(bb, sizeof bb, "%02d:%02d", lt.tm_hour, lt.tm_min);
+    lv_label_set_text_fmt(lbl_night_hint, "Sunrise %s    Sunset %s", a, bb);
+}
+
+/* Show the Start/End time pickers only for the fixed-range trigger. In sunset
+ * mode hide them and float the brightness row up right under the trigger (no
+ * gap), with the location hint where the time pickers were. */
+static void night_update_vis(void) {
+    int timerange = (settings.night_source == 0);
+    if (row_night_start && row_night_end) {
+        if (timerange) {
+            lv_obj_clear_flag(row_night_start, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(row_night_end,   LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(row_night_start, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(row_night_end,   LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    int pct_y = timerange ? 398 : 234;   /* below the times, or under the trigger */
+    if (row_night_pct)
+        lv_obj_align(row_night_pct, LV_ALIGN_TOP_LEFT, SX(4), SY(pct_y));
+    if (lbl_night_hint) {
+        lv_obj_align(lbl_night_hint, LV_ALIGN_TOP_LEFT, SX(8), SY(pct_y + 82));
+        if (timerange) lv_obj_add_flag(lbl_night_hint, LV_OBJ_FLAG_HIDDEN);
+        else           lv_obj_clear_flag(lbl_night_hint, LV_OBJ_FLAG_HIDDEN);
+    }
+    night_tick();   /* fill the hint with the sun times right away in sunset mode */
+}
+
+static void on_night_enable(lv_event_t * e) {
+    settings.night_mode = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+    if (lbl_night_summary)
+        lv_label_set_text(lbl_night_summary, settings.night_mode ? "on" : "off");
+}
+static void on_night_src(lv_event_t * e) {
+    settings.night_source =
+        lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+    night_update_vis();
+}
+static void on_night_start(lv_event_t * e) {
+    settings.night_start = lv_slider_get_value(lv_event_get_target(e)) * 15;
+    char b[8]; lv_label_set_text(lbl_night_start, night_hhmm(settings.night_start, b, sizeof b));
+}
+static void on_night_end(lv_event_t * e) {
+    settings.night_end = lv_slider_get_value(lv_event_get_target(e)) * 15;
+    char b[8]; lv_label_set_text(lbl_night_end, night_hhmm(settings.night_end, b, sizeof b));
+}
+static void on_night_pct(lv_event_t * e) {
+    settings.night_pct = lv_slider_get_value(lv_event_get_target(e));
+    lv_label_set_text_fmt(lbl_night_pct, "%d%%", settings.night_pct);
+}
+
+/* Night mode: dim the screen to a % of the day brightness during night hours,
+ * triggered either by a fixed local time range or by sunset->sunrise. */
+static void open_night_modal(lv_event_t * e) {
+    (void)e;
+    lv_obj_t * p = modal_open("Night mode", 560);
+    lv_obj_add_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(p, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(p, LV_SCROLLBAR_MODE_AUTO);
+    char b[8];
+    lv_obj_t * r;
+
+    r = panel_row(p, 70, "Enable night mode", NULL);
+    sw_night = row_switch(r, settings.night_mode, on_night_enable);
+
+    /* Trigger switch: ON = sunset -> sunrise, OFF = fixed time range. */
+    r = panel_row(p, 152, "Use sunset/sunrise", NULL);
+    sw_night_src = row_switch(r, settings.night_source, on_night_src);
+
+    row_night_start = panel_row(p, 234, "Start", &lbl_night_start);
+    lv_label_set_text(lbl_night_start, night_hhmm(settings.night_start, b, sizeof b));
+    sl_night_start = row_slider(row_night_start, 0, 95, settings.night_start / 15, on_night_start);
+
+    row_night_end = panel_row(p, 316, "End", &lbl_night_end);
+    lv_label_set_text(lbl_night_end, night_hhmm(settings.night_end, b, sizeof b));
+    sl_night_end = row_slider(row_night_end, 0, 95, settings.night_end / 15, on_night_end);
+
+    /* Brightness row + hint are repositioned by night_update_vis(): right under
+       the trigger in sunset mode, below the time pickers in range mode. */
+    row_night_pct = panel_row(p, 398, "Brightness (% of day)", &lbl_night_pct);
+    lv_label_set_text_fmt(lbl_night_pct, "%d%%", settings.night_pct);
+    sl_night_pct = row_slider(row_night_pct, 5, 100, settings.night_pct, on_night_pct);
+
+    lbl_night_hint = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_night_hint, lv_color_hex(0x88aabb), 0);
+    lv_obj_set_style_text_font(lbl_night_hint, SF(18), 0);
+    lv_label_set_text(lbl_night_hint, "Sunset/sunrise uses the Weather location.");
+
+    /* Live-refresh the sun-times hint while the modal is open (the fetch is
+       async, so the times may land a moment after sunset mode is enabled). */
+    modal_tick_fn = night_tick;
+    modal_timer = lv_timer_create(modal_timer_cb, 1000, NULL);
+
+    night_update_vis();
+}
+
 static void open_display_modal(lv_event_t * e) {
     (void)e;
     lv_obj_t * p = modal_open("Display", 560);
@@ -567,10 +695,18 @@ static void open_display_modal(lv_event_t * e) {
     sl_dim = row_slider(r, 0, 400, settings.dim_brightness, on_dim_change);
     y += 82;
 
-    /* Auto-brightness — follow the LTR-303 ambient sensor (Toon 2). When on, the
-       active backlight tracks the room between the dim and active values above. */
+#ifndef TOON1
+    /* Toon 2 only: continuous ambient-light auto-brightness (LTR-303 sensor). */
     r = panel_row(p, y, "Auto-brightness (light sensor)", NULL);
     row_switch(r, settings.auto_brightness, on_auto_brightness_change);
+    y += 82;
+#endif
+
+    /* Night mode — dims the screen to a % of day brightness during night hours
+       (fixed time range or sunset). Tapping the row opens its own modal. */
+    r = panel_row(p, y, "Night mode", &lbl_night_summary);
+    lv_label_set_text(lbl_night_summary, settings.night_mode ? "on" : "off");
+    lv_obj_add_event_cb(r, open_night_modal, LV_EVENT_CLICKED, NULL);
     y += 82;
 
     /* Usage bars flanking the dim clock: energy now (W) + gas hourly (m³),

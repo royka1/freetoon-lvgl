@@ -97,8 +97,11 @@ void ui_idle_tick(void) {
     }
     wake_pending = 0;
 
-    /* Auto-brightness: while active, retrack the ambient sensor every ~3 s. */
-    if (!is_dimmed && settings.auto_brightness) {
+    /* Re-apply the active backlight every ~3 s while the screen is on: tracks
+     * the ambient sensor (auto-brightness) AND lets Night mode dim/brighten at
+     * the sunset/time boundary without needing a touch. backlight_set() applies
+     * the night scaling, so this stays a plain re-apply. */
+    if (!is_dimmed && (settings.auto_brightness || settings.night_mode)) {
         static uint32_t last_als_ms = 0;
         uint32_t nt = lv_tick_get();
         if (nt - last_als_ms > 3000) { apply_active_brightness(); last_als_ms = nt; }
