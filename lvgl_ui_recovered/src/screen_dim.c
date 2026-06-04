@@ -8,6 +8,7 @@
 #include "boxtalk.h"
 #include "settings.h"
 #include "homewizard.h"
+#include "meteradapter.h"
 #include "homeassistant.h"
 #include "packages.h"
 #include "weather.h"
@@ -22,6 +23,24 @@
 LV_FONT_DECLARE(lv_font_montserrat_96_custom);
 
 static lv_obj_t * scr_root = NULL;
+
+/* ---- usage bars flanking the clock: energy now (W) + gas hourly (m³) ----
+ * Restored (wired to settings.show_dim_bars; default on) after the symmetric
+ * rework dropped them. Vertical bars at the outer edges, centred on the temp
+ * row; the fill grows up. Fixed full-scale (DIM_E_FULL_W / DIM_G_FULL_M3H), so a
+ * maxed bar is ~2x clock height. The waste (left) and weather (right) blocks sit
+ * raised on the date row (see screen_dim_create), so the date / waste date /
+ * "Buiten" line up and a full-height bar passes the edges without crowding. */
+#define DIM_BAR_W     44      /* bar width, design px (SX-scaled) */
+#define DIM_BAR_INSET 20      /* gap from the screen bezel (outer edges) */
+#define DIM_BAR_Y     45      /* vertical centre = the indoor-temp row */
+#define DIM_CLOCK_H   96      /* clock font px; envelope = 2x this */
+#define DIM_E_FULL_W    5000.0f   /* power at full bar height (fixed scale) */
+#define DIM_G_FULL_M3H  2.0f      /* gas (m³/h) at full bar height */
+static lv_obj_t * bar_l_env, * bar_l_fill, * bar_l_cap;
+static lv_obj_t * bar_r_env, * bar_r_fill, * bar_r_cap;
+static int   dim_bar_h = 0;        /* envelope height (px, computed at create) */
+
 static lv_obj_t * lbl_clock;
 static lv_obj_t * lbl_date;
 static lv_obj_t * dim_moon_img;   /* moon-phase widget — always shown */
@@ -86,6 +105,87 @@ static void dim_vent_apply_anim(int rpm) {
     lv_anim_set_time(&a, period);
     lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
     lv_anim_start(&a);
+}
+
+/* Build one bar slot (side: -1 left edge, +1 right edge). Envelope is an
+ * invisible container at the screen edge, vertically centred on the temp row;
+ * the coloured fill is a child anchored to the bottom that grows upward. The
+ * caption is align_to'd to the envelope so it reads inward. Neither is
+ * CLICKABLE, so a tap on the bar still wakes the screen. */
+static void dim_make_bar(int side, lv_obj_t ** env, lv_obj_t ** fill,
+                         lv_obj_t ** cap) {
+    int bw = SX(DIM_BAR_W);
+    lv_align_t al = (side < 0) ? LV_ALIGN_LEFT_MID : LV_ALIGN_RIGHT_MID;
+    int xinset = (side < 0) ? SX(DIM_BAR_INSET) : -SX(DIM_BAR_INSET);
+
+    *env = lv_obj_create(scr_root);
+    lv_obj_remove_style_all(*env);
+    lv_obj_set_size(*env, bw, dim_bar_h);
+    lv_obj_set_style_bg_opa(*env, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(*env, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(*env, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(*env, al, xinset, SY(DIM_BAR_Y));
+
+    *fill = lv_obj_create(*env);
+    lv_obj_remove_style_all(*fill);
+    lv_obj_set_width(*fill, bw);
+    lv_obj_set_height(*fill, 0);
+    lv_obj_set_style_bg_color(*fill, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_bg_opa(*fill, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(*fill, 4, 0);
+    lv_obj_clear_flag(*fill, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(*fill, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    *cap = lv_label_create(scr_root);
+    lv_obj_set_style_text_color(*cap, lv_color_hex(0xbbbbbb), 0);
+    lv_obj_set_style_text_font(*cap, SF(18), 0);
+    lv_obj_set_style_text_align(*cap, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(*cap, "");
+    lv_obj_align_to(*cap, *env,
+                    (side < 0) ? LV_ALIGN_OUT_BOTTOM_LEFT : LV_ALIGN_OUT_BOTTOM_RIGHT,
+                    0, SY(14));
+}
+
+/* Apply a value to a bar slot. ratio 0..1 of the envelope. Hidden when !show. */
+static void dim_bar_set(lv_obj_t * env, lv_obj_t * fill, lv_obj_t * cap,
+                        int side, int show, int text_only,
+                        float ratio, uint32_t color, const char * txt) {
+    if (!env) return;
+    if (!show) {
+        lv_obj_add_flag(env, LV_OBJ_FLAG_HIDDEN);
+        if (cap) lv_obj_add_flag(cap, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (text_only) {
+        lv_obj_add_flag(env, LV_OBJ_FLAG_HIDDEN);
+        if (cap) {
+            lv_label_set_text(cap, txt);
+            lv_obj_set_style_text_color(cap, lv_color_hex(color), 0);
+            lv_obj_set_style_text_font(cap, SF(22), 0);
+            lv_obj_align_to(cap, env,
+                (side < 0) ? LV_ALIGN_OUT_RIGHT_MID : LV_ALIGN_OUT_LEFT_MID,
+                (side < 0) ? SX(6) : -SX(6), 0);
+            lv_obj_clear_flag(cap, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
+    }
+    if (ratio < 0) ratio = 0;
+    if (ratio > 1) ratio = 1;
+    int h = (int)(ratio * dim_bar_h + 0.5f);
+    if (ratio > 0 && h < 3) h = 3;            /* show a sliver when nonzero */
+    lv_obj_set_height(fill, h);
+    lv_obj_align(fill, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(fill, lv_color_hex(color), 0);
+    lv_obj_clear_flag(env, LV_OBJ_FLAG_HIDDEN);
+    if (cap) {
+        lv_label_set_text(cap, txt);
+        lv_obj_set_style_text_color(cap, lv_color_hex(color), 0);
+        lv_obj_set_style_text_font(cap, SF(18), 0);
+        lv_obj_align_to(cap, env,
+            (side < 0) ? LV_ALIGN_OUT_BOTTOM_LEFT : LV_ALIGN_OUT_BOTTOM_RIGHT,
+            0, SY(14));
+        lv_obj_clear_flag(cap, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void on_wake_tap(lv_event_t * e) {
@@ -431,6 +531,37 @@ static void refresh_cb(lv_timer_t * t) {
         }
     }
 
+    /* Usage bars: energy now (W) + gas trailing-hour (m³), gated on
+     * show_dim_bars. Side assignment honours dim_bars_swap; default (swap off)
+     * = gas LEFT, energy RIGHT. Gas needs the P1; energy follows energy_source. */
+    if (bar_l_env) {
+        int   e_conn = (settings.energy_source == 0)
+                         ? meter_state.connected
+                         : (settings.enable_p1_elec && hw_state.connected_p1);
+        float e = (settings.energy_source == 0) ? meter_state.power_w
+                                                : hw_state.power_w;
+        if (e < 0) e = 0;                          /* export -> empty */
+        float er = e / DIM_E_FULL_W;
+        char etxt[24];
+        if (e >= 1000) snprintf(etxt, sizeof etxt, "%.1f kW", e / 1000.0f);
+        else           snprintf(etxt, sizeof etxt, "%.0f W", e);
+
+        int   g_conn = hw_state.connected_p1;
+        float g = hw_state.gas_hour_m3; if (g < 0) g = 0;
+        float gr = g / DIM_G_FULL_M3H;
+        char gtxt[24];
+        snprintf(gtxt, sizeof gtxt, "%.2f m3/h", g);
+
+        int show = settings.show_dim_bars;
+        if (!settings.dim_bars_swap) {             /* default: gas LEFT, energy RIGHT */
+            dim_bar_set(bar_l_env, bar_l_fill, bar_l_cap, -1, show && g_conn, 0, gr, 0xffaa33, gtxt);
+            dim_bar_set(bar_r_env, bar_r_fill, bar_r_cap, +1, show && e_conn, 0, er, 0xffffff, etxt);
+        } else {                                   /* swapped: energy LEFT, gas RIGHT */
+            dim_bar_set(bar_l_env, bar_l_fill, bar_l_cap, -1, show && e_conn, 0, er, 0xffffff, etxt);
+            dim_bar_set(bar_r_env, bar_r_fill, bar_r_cap, +1, show && g_conn, 0, gr, 0xffaa33, gtxt);
+        }
+    }
+
     lv_obj_invalidate(scr_root);
 }
 
@@ -459,6 +590,12 @@ lv_obj_t * screen_dim_create(void) {
     lv_obj_set_style_text_font(lbl_clock, &lv_font_montserrat_96_custom, 0);
     lv_label_set_text(lbl_clock, "--:--");
     lv_obj_align(lbl_clock, LV_ALIGN_CENTER, 0, SY(-130));
+
+    /* Usage bars at the outer edges, centred on the temp row. Created always;
+     * shown/hidden per settings.show_dim_bars in refresh_cb. */
+    dim_bar_h = SY(2 * DIM_CLOCK_H);
+    dim_make_bar(-1, &bar_l_env, &bar_l_fill, &bar_l_cap);
+    dim_make_bar(+1, &bar_r_env, &bar_r_fill, &bar_r_cap);
 
     /* All labels positioned against screen center with explicit Y offsets so
        different content widths can't drift them out of alignment. */
@@ -607,13 +744,13 @@ lv_obj_t * screen_dim_create(void) {
     lv_label_set_text(lbl_outside_temp, "");
     lv_obj_set_width(lbl_outside_temp, SX(180));
     lv_obj_set_style_text_align(lbl_outside_temp, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_align(lbl_outside_temp, LV_ALIGN_TOP_RIGHT, SX(-48), SY(250));
+    lv_obj_align(lbl_outside_temp, LV_ALIGN_TOP_RIGHT, SX(-48), SY(125));
 
     wx_icon = lv_img_create(scr_root);
     lv_img_set_src(wx_icon, &icon_wx_cloud_lg);
     lv_obj_set_style_img_recolor(wx_icon, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_img_recolor_opa(wx_icon, 255, 0);
-    lv_obj_align(wx_icon, LV_ALIGN_TOP_RIGHT, SX(-116), SY(252));
+    lv_obj_align(wx_icon, LV_ALIGN_TOP_RIGHT, SX(-116), SY(127));
 
     lbl_outside = lv_label_create(scr_root);
     lv_obj_set_style_text_color(lbl_outside, lv_color_hex(0xbbbbbb), 0);
@@ -621,7 +758,7 @@ lv_obj_t * screen_dim_create(void) {
     lv_label_set_text(lbl_outside, "Buiten");
     lv_obj_set_width(lbl_outside, SX(210));
     lv_obj_set_style_text_align(lbl_outside, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(lbl_outside, LV_ALIGN_TOP_RIGHT, SX(-56), SY(362));
+    lv_obj_align(lbl_outside, LV_ALIGN_TOP_RIGHT, SX(-56), SY(237));
 
     /* Life360 — sits under the outside temp on the right edge, mirroring
      * the Family tile on the home screen. Right-aligned so longer street
@@ -633,7 +770,7 @@ lv_obj_t * screen_dim_create(void) {
     lv_obj_set_style_text_align(dim_lbl_life360_a, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_long_mode(dim_lbl_life360_a, LV_LABEL_LONG_DOT);
     lv_label_set_text(dim_lbl_life360_a, "");
-    lv_obj_align(dim_lbl_life360_a, LV_ALIGN_TOP_RIGHT, SX(-24), SY(388));
+    lv_obj_align(dim_lbl_life360_a, LV_ALIGN_TOP_RIGHT, SX(-24), SY(263));
     lv_obj_add_flag(dim_lbl_life360_a, LV_OBJ_FLAG_HIDDEN);
 
     dim_lbl_life360_b = lv_label_create(scr_root);
@@ -643,7 +780,7 @@ lv_obj_t * screen_dim_create(void) {
     lv_obj_set_style_text_align(dim_lbl_life360_b, LV_TEXT_ALIGN_RIGHT, 0);
     lv_label_set_long_mode(dim_lbl_life360_b, LV_LABEL_LONG_DOT);
     lv_label_set_text(dim_lbl_life360_b, "");
-    lv_obj_align(dim_lbl_life360_b, LV_ALIGN_TOP_RIGHT, SX(-24), SY(412));
+    lv_obj_align(dim_lbl_life360_b, LV_ALIGN_TOP_RIGHT, SX(-24), SY(287));
     lv_obj_add_flag(dim_lbl_life360_b, LV_OBJ_FLAG_HIDDEN);
 
     /* Waste cluster (left column): mirror the weather cluster. Use the native
@@ -653,7 +790,7 @@ lv_obj_t * screen_dim_create(void) {
     lv_img_set_src(waste_icon, &icon_trash_lg);
     lv_obj_set_style_img_recolor(waste_icon, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_img_recolor_opa(waste_icon, 255, 0);
-    lv_obj_align(waste_icon, LV_ALIGN_TOP_LEFT, SX(100), SY(252));
+    lv_obj_align(waste_icon, LV_ALIGN_TOP_LEFT, SX(100), SY(127));
 
     lbl_waste = lv_label_create(scr_root);
     lv_obj_set_style_text_color(lbl_waste, lv_color_hex(0xbbbbbb), 0);
@@ -661,7 +798,7 @@ lv_obj_t * screen_dim_create(void) {
     lv_obj_set_width(lbl_waste, SX(260));
     lv_obj_set_style_text_align(lbl_waste, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(lbl_waste, LV_LABEL_LONG_WRAP);
-    lv_obj_align(lbl_waste, LV_ALIGN_TOP_LEFT, SX(10), SY(362));
+    lv_obj_align(lbl_waste, LV_ALIGN_TOP_LEFT, SX(10), SY(237));
 
     /* (City header above forecast strip removed — location moved under wx icon) */
     dim_lbl_city = NULL;
