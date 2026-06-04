@@ -129,6 +129,12 @@ do_install() {
         $SCP "$PWA_DIR/$f" "$TOON_USER@$TOON_HOST:/mnt/data/pwa/ui/${f}.new"
         remote "mv -f /mnt/data/pwa/ui/${f}.new /mnt/data/pwa/ui/${f}"
     done
+    # Retire obsolete simple-app / settings-page assets at the pwa root — the
+    # WASM UI under /ui/ is the only frontend now ("/" 302-redirects there).
+    # Guarded on the bundle existing so we never strip a working root.
+    remote '[ -s /mnt/data/pwa/ui/index.wasm ] && cd /mnt/data/pwa && rm -f \
+        app.js sw.js manifest.json icon-192.png index.html index.js index.wasm \
+        index.html.bak index.html.staticbak index.js.bak index.wasm.bak || true'
 
     echo "[4/5] Seeding default config..."
     # ui_choice — pick freetoon on first install; respect existing user choice

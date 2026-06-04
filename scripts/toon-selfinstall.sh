@@ -153,6 +153,22 @@ for f in index.html index.wasm index.js; do
     fi
 done
 
+# 2d3) Retire the old simple-app / settings-page assets that earlier releases
+# dropped at the pwa ROOT. pwa_server now serves ONLY the WASM UI under /ui/
+# (bare "/" 302-redirects there), so these are dead files — remove them so an
+# upgraded device doesn't keep serving stale JS or waste flash. ONLY do this
+# once the WASM bundle is actually present under /ui/, so we never strip the
+# root without a working replacement in place.
+if [ -s "$DEST/pwa/ui/index.wasm" ]; then
+    for stale in app.js sw.js manifest.json icon-192.png \
+                 index.html index.js index.wasm \
+                 index.html.bak index.html.staticbak \
+                 index.js.bak index.wasm.bak; do
+        [ -e "$DEST/pwa/$stale" ] && rm -f "$DEST/pwa/$stale" \
+            && say "removed obsolete pwa asset -> $DEST/pwa/$stale"
+    done
+fi
+
 # 2e) Open the PWA (10081) + VNC (5900) ports in the stock Toon firewall. The
 # HCB-INPUT chain in /etc/default/iptables.conf accepts only 22/80 and drops
 # the rest, so pwa_server's phone UI and x11vnc are unreachable on the LAN. Add
