@@ -93,8 +93,19 @@
  * the panel won't show more. */
 #define LV_DISP_DEF_REFR_PERIOD 20      /*[ms]*/
 
+/* NOTE: LV_INV_BUF_SIZE deliberately left at its default (32). Counter-intuitive
+ * but measured: on this software renderer the per-dirty-area overhead (a full
+ * object-tree walk per area) dominates, NOT pixel fill. Raising it to 128 kept
+ * a scrolling list as ~30 separate row-strips (30 tree walks + choppy band
+ * updates) instead of letting it overflow into ONE atomic full-screen redraw,
+ * which is both faster and smoother here. Keep it low so dense updates coalesce. */
+
 /*Input device read period in milliseconds*/
 #define LV_INDEV_DEF_READ_PERIOD 30     /*[ms]*/
+
+/* NOTE: LV_INDEV_DEF_SCROLL_THROW is hardcoded (unguarded) in
+ * lvgl/src/hal/lv_hal_indev.h, which is included AFTER this file, so defining
+ * it here is silently overridden. The Toon 1 value is set there instead. */
 
 /*Use a custom tick source that tells the elapsed time in milliseconds.
  *It removes the need to manually update the tick with `lv_tick_inc()`)*/

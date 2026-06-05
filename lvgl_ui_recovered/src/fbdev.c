@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <time.h>
 
 #if USE_BSD_FBDEV
 #include <sys/fcntl.h>
@@ -235,6 +236,15 @@ void fbdev_flush(lv_disp_drv_t * drv, const lv_area_t * area, lv_color_t * color
 
 
     lv_coord_t w = (act_x2 - act_x1 + 1);
+
+    /* Perf probe (env TOONUI_PERF=1): measure raw fb write bandwidth so we can
+     * tell flush-bound from render-bound. The i.MX27 fb is dma_alloc_writecombine
+     * (imxfb.c), so this should be ~fast; if it is, the 200ms/frame is render. */
+    static int fperf = -1;
+    struct timespec ft0;
+    if (fperf < 0) fperf = (getenv("TOONUI_PERF") != NULL);
+    if (fperf) clock_gettime(CLOCK_MONOTONIC, &ft0);
+
     long int location = 0;
     long int byte_location = 0;
     unsigned char bit_location = 0;
@@ -305,6 +315,30 @@ void fbdev_flush(lv_disp_drv_t * drv, const lv_area_t * area, lv_color_t * color
 
     //May be some direct update command is required
     //ret = ioctl(state->fd, FBIO_UPDATE, (unsigned long)((uintptr_t)rect));
+
+    if(fperf) {
+        struct timespec ft1; clock_gettime(CLOCK_MONOTONIC, &ft1);
+        static double fbytes = 0, fns = 0; static uint32_t flast = 0;
+        static int fcnt = 0, fmaxw = 0, fmaxh = 0; static long fmaxpx = 0, ftotpx = 0;
+        int fh = act_y2 - act_y1 + 1;
+        fbytes += (double)w * fh * (vinfo.bits_per_pixel / 8);
+        fns    += (ft1.tv_sec - ft0.tv_sec) * 1e9 + (ft1.tv_nsec - ft0.tv_nsec);
+        fcnt++;
+        ftotpx += (long)w * fh;
+        if((long)w * fh > fmaxpx) { fmaxpx = (long)w * fh; fmaxw = w; fmaxh = fh; }
+        uint32_t fnow = (uint32_t)(ft1.tv_sec * 1000u + ft1.tv_nsec / 1000000u);
+        if(fnow - flast > 2000 && fns > 1e6) {
+            double bps = fbytes / (fns / 1e9);
+            /* avg redraw is the key number: ~384k px => EVERY frame redraws the
+             * whole screen (the invalidation overflow); small avg => only the
+             * scrolled area is redrawn (fixed). max is the worst single frame. */
+            fprintf(stderr, "[perf] fb flush: %.0f MB/s; %d flushes/2s; "
+                    "redraw avg=%ldk px, max=%dx%d (%ldk px)\n",
+                    bps / (1024 * 1024), fcnt, ftotpx / (fcnt > 0 ? fcnt : 1) / 1000,
+                    fmaxw, fmaxh, fmaxpx / 1000);
+            flast = fnow; fbytes = 0; fns = 0; fcnt = 0; fmaxw = fmaxh = 0; fmaxpx = 0; ftotpx = 0;
+        }
+    }
 
     lv_disp_flush_ready(drv);
 }
