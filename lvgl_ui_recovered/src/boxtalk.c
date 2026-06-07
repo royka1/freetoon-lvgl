@@ -229,8 +229,6 @@ static void handle_notify(const char* xml) {
     if (!attr_value(xml, "serviceid", sid, sizeof(sid))) return;
     char src_uuid[64] = {0};
     attr_value(xml, "uuid", src_uuid, sizeof(src_uuid));
-    /* (quiet — was: fprintf notify log) */
-
     /* sid is full urn: extract the trailing part */
     const char* tail = strrchr(sid, ':');
     if (tail) tail++; else tail = sid;
@@ -315,6 +313,26 @@ static void handle_notify(const char* xml) {
         if (elem_text_float(xml, "CurrentElectricityFlow", &v)) {
             meteradapter_on_flow(v);
             toon_state.msg_count++;
+        }
+    } else if (strcmp(tail, "GasFlowMeter") == 0) {
+        /* Live gas flow rate (liters/hour) from happ_pwrusage. Drives the
+         * dim-screen gas bar. CurrentGasQuantity is in a separate service
+         * (GasQuantityMeter) — see the handler below. */
+        float v;
+        if (elem_text_float(xml, "CurrentGasFlow", &v)) {
+            meteradapter_on_gas_flow(v);
+            toon_state.msg_count++;
+        }
+    } else if (strcmp(tail, "GasQuantityMeter") == 0) {
+        /* Cumulative gas (dm3) from the same happ_pwrusage publisher.
+         * Separate service from GasFlowMeter — the QMF profile for
+         * GasFlowMeter only carries CurrentGasFlow, so we needed a
+         * second subscription to get the total. */
+        float v;
+        if (elem_text_float(xml, "CurrentGasQuantity", &v)) {
+            meteradapter_on_gas_qty(v);
+            toon_state.msg_count++;
+            fprintf(stderr, "[bxt] gas qty: %.0f m3 total\n", meter_state.gas_m3);
         }
     } else if (tile_slots_integration_by_service(tail) != NULL) {
         /* Marketplace integration — dispatched via the manifest's value_field
@@ -814,6 +832,20 @@ static void send_initial_handshake(void) {
      * smart-meter power (the official "meteradapter" energy source). */
     snprintf(buf, sizeof(buf),
         "<subscribe uuid=\"%s\" destuuid=\"\"><target uuid=\"\" serviceid=\"urn:hcb-hae-com:serviceId:ElectricityFlowMeter\"></target></subscribe>",
+        OUR_UUID);
+    send_msg(buf);
+
+    /* subscribe to GasFlowMeter — live gas flow rate (liters/hour) from
+     * happ_pwrusage. Drives the dim-screen gas bar. */
+    snprintf(buf, sizeof(buf),
+        "<subscribe uuid=\"%s\" destuuid=\"\"><target uuid=\"\" serviceid=\"urn:hcb-hae-com:serviceId:GasFlowMeter\"></target></subscribe>",
+        OUR_UUID);
+    send_msg(buf);
+
+    /* subscribe to GasQuantityMeter — cumulative gas (dm3), separate QMF
+     * service from GasFlowMeter, same happ_pwrusage publisher. */
+    snprintf(buf, sizeof(buf),
+        "<subscribe uuid=\"%s\" destuuid=\"\"><target uuid=\"\" serviceid=\"urn:hcb-hae-com:serviceId:GasQuantityMeter\"></target></subscribe>",
         OUR_UUID);
     send_msg(buf);
 

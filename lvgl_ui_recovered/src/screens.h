@@ -35,7 +35,7 @@ void screen_layout_editor_show(void);
 lv_obj_t * screen_layout_editor_create(void);
 lv_obj_t * screen_crypto_picker_create(void);   /* Settings -> Crypto coin live-search */
 lv_obj_t * screen_ha_picker_create(void);       /* Settings -> HA entity picker (domain-filtered list) */
-void screen_ha_picker_open(const char * domain, lv_obj_t * target_ta);  /* sets domain+target, then ui_push */
+void screen_ha_picker_open(const char * domain, lv_obj_t * target_ta);  /* creates overlay on top layer */
 void screen_ha_picker_open_add(const char * domain, int dev_type);      /* add-mode: pick -> ha_device_add */
 lv_obj_t * screen_ha_devices_create(void);      /* Settings -> Devices manager (add/remove/pin) */
 lv_obj_t * screen_crypto_create(void);           /* crypto tile-tap -> price-history graphs */

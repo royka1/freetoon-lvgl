@@ -220,6 +220,13 @@ static int        g_p1_count = 4;   /* active page-2 slots (4 fixed, or N from a
 /* RSS news ticker (above the forecast). Tap → headline list; tapping a headline
  * shows its article summary (from the RSS body) in the reading pane. */
 static lv_obj_t * news_ticker    = NULL;
+#ifdef TOON1
+/* Toon 1: the ticker is a static label whose text is rotated to the next
+ * headline every few seconds by news_rotate_tick(), rather than a per-frame
+ * scrolling marquee (which writes a full-width band to the uncached fb on
+ * every refresh -> sluggish/stutter on the 400 MHz ARM926, no GPU). */
+static lv_timer_t * news_rot_timer = NULL;
+#endif
 static lv_obj_t * news_modal     = NULL;
 static lv_obj_t * news_body_lbl  = NULL;   /* reading pane (was a QR) */
 static lv_obj_t * news_body_title = NULL;
@@ -266,28 +273,74 @@ static int        vent_anim_period_ms = -1;
 
 static lv_timer_t * refresh_timer = NULL;
 
-/* ---- Energy source selector ----
- * settings.energy_source: 0 = meteradapter (Toon's own meter via happ_pwrusage),
- * 1 = HomeWizard P1. The Energy tile reads through these so the user can switch
- * source in Settings without touching the rest of the layout. */
-static int energy_connected(void) {
-    return settings.energy_source == 0 ? meter_state.connected
-                                       : (settings.enable_p1_elec && hw_state.connected_p1);
+/* ---- Per-resource energy/water source dispatch ----
+ * Each resource reads from the source selected in Settings. The multi-source
+ * getters below are called from the Energy tile, Water tile, and home refresh
+ * timer. All sources are polled independently (BoxTalk meteradapter, HomeWizard
+ * P1 thread, HA energy polling in ha_thread), so switching is live. */
+static int energy_elec_connected(void) {
+    switch (settings.energy_elec_source) {
+    case ENERGY_SRC_ZWAVE: return meter_state.connected;
+    case ENERGY_SRC_HW_P1: return hw_state.connected_p1;
+    case ENERGY_SRC_HA:    return ha_energy.connected;
+    default:               return 0;
+    }
 }
-static float energy_power_w(void) {
-    return settings.energy_source == 0 ? meter_state.power_w : hw_state.power_w;
+static float energy_elec_power_w(void) {
+    switch (settings.energy_elec_source) {
+    case ENERGY_SRC_ZWAVE: return meter_state.power_w;
+    case ENERGY_SRC_HW_P1: return hw_state.power_w;
+    case ENERGY_SRC_HA:    return ha_energy.power_w;
+    default:               return 0;
+    }
 }
-/* Cumulative gas (m³) is only available from the HomeWizard P1; happ_pwrusage's
- * HTTP path doesn't expose it. Returns <0 when unavailable. */
+static float energy_elec_prod_w(void) {
+    if (settings.energy_elec_source == ENERGY_SRC_HA &&
+        settings.energy_elec_prod_ha_entity[0])
+        return ha_energy.power_prod_w;
+    return 0;
+}
+static int energy_gas_connected(void) {
+    switch (settings.energy_gas_source) {
+    case ENERGY_SRC_ZWAVE: return meter_state.gas_connected;
+    case ENERGY_SRC_HW_P1: return hw_state.connected_p1;
+    case ENERGY_SRC_HA:    return ha_energy.connected;
+    default:               return 0;
+    }
+}
 static float energy_gas_m3(void) {
-    if (settings.energy_source == 1 && hw_state.connected_p1) return hw_state.gas_m3;
-    return -1.0f;
+    switch (settings.energy_gas_source) {
+    case ENERGY_SRC_ZWAVE: return meter_state.gas_connected ? meter_state.gas_m3 : -1.0f;
+    case ENERGY_SRC_HW_P1: return hw_state.connected_p1 ? hw_state.gas_m3 : -1.0f;
+    case ENERGY_SRC_HA:    return ha_energy.connected ? ha_energy.gas_m3 : -1.0f;
+    default:               return -1.0f;
+    }
+}
+static int energy_water_connected(void) {
+    switch (settings.energy_water_source) {
+    case ENERGY_SRC_HW_P1: return hw_state.connected_water;
+    case ENERGY_SRC_HA:    return ha_energy.connected;
+    default:               return 0;
+    }
+}
+static float energy_water_m3(void) {
+    switch (settings.energy_water_source) {
+    case ENERGY_SRC_HW_P1: return hw_state.water_total_m3;
+    case ENERGY_SRC_HA:    return ha_energy.water_m3;
+    default:               return 0;
+    }
 }
 static const char * energy_offline_label(void) {
-    if (settings.energy_source == 1)        /* HomeWizard P1 */
+    switch (settings.energy_elec_source) {
+    case ENERGY_SRC_HW_P1:
         return hw_state.polled_p1 ? "P1 offline" : "Initializing...";
-    /* meteradapter: last_flow_s == 0 means no notify has arrived yet */
-    return meter_state.last_flow_s ? "meter offline" : "Initializing...";
+    case ENERGY_SRC_ZWAVE:
+        return meter_state.last_flow_s ? "meter offline" : "Initializing...";
+    case ENERGY_SRC_HA:
+        return ha_energy.connected ? "Initializing..." : "HA offline";
+    default:
+        return "Off";
+    }
 }
 
 /* ---------- tile builder helpers ---------- */
@@ -902,6 +955,32 @@ static void on_pin_pos(lv_event_t * e) {
     if (ha_devices[i].type == HADEV_LIGHT) ha_light_set_brightness_async(ha_devices[i].entity_id, v);
     else                                   ha_cover_set_position_async(ha_devices[i].entity_id, v);
 }
+static void pin_select_cycle(int idx, int dir) {
+    if (idx < 0 || idx >= ha_device_count) return;
+    ha_device_t * D = &ha_devices[idx];
+    if (!D->options[0]) return;
+    char opts[256];
+    snprintf(opts, sizeof(opts), "%s", D->options);
+    int count = 0, cur = -1;
+    char * save = NULL;
+    for (char * tok = strtok_r(opts, "|", &save); tok; tok = strtok_r(NULL, "|", &save)) {
+        if (!strcmp(tok, D->state)) cur = count;
+        count++;
+    }
+    if (count == 0) return;
+    if (cur < 0) cur = 0;
+    int next = (cur + dir + count) % count;
+    snprintf(opts, sizeof(opts), "%s", D->options);
+    save = NULL;
+    int n = 0; const char * target = NULL;
+    for (char * tok = strtok_r(opts, "|", &save); tok; tok = strtok_r(NULL, "|", &save)) {
+        if (n == next) { target = tok; break; }
+        n++;
+    }
+    if (target) ha_device_select_option_async(D->entity_id, target);
+}
+static void on_pin_select_prev(lv_event_t * e) { pin_select_cycle(pin_ev_idx(e), -1); }
+static void on_pin_select_next(lv_event_t * e) { pin_select_cycle(pin_ev_idx(e),  1); }
 
 /* Build one pinned tile at row `slot` (0-based) for ha_devices[dev_idx]. */
 static void build_pin_tile(lv_obj_t * parent, int dev_idx, int slot) {
@@ -959,6 +1038,30 @@ static void build_pin_tile(lv_obj_t * parent, int dev_idx, int slot) {
             lv_label_set_text(l, cb[i].txt);
             lv_obj_center(l);
         }
+    } else if (D->type == HADEV_SELECT) {
+        lv_obj_t * b1 = lv_btn_create(t);
+        lv_obj_set_size(b1, 36, 30);
+        lv_obj_align(b1, LV_ALIGN_RIGHT_MID, -48, 0);
+        lv_obj_set_style_bg_color(b1, lv_color_hex(0x3a4658), 0);
+        lv_obj_set_style_radius(b1, 8, 0);
+        lv_obj_add_event_cb(b1, on_pin_select_prev, LV_EVENT_CLICKED, (void *)(intptr_t)dev_idx);
+        lv_obj_t * l1 = lv_label_create(b1);
+        lv_obj_set_style_text_color(l1, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(l1, SF(14), 0);
+        lv_label_set_text(l1, "<");
+        lv_obj_center(l1);
+
+        lv_obj_t * b2 = lv_btn_create(t);
+        lv_obj_set_size(b2, 36, 30);
+        lv_obj_align(b2, LV_ALIGN_RIGHT_MID, -2, 0);
+        lv_obj_set_style_bg_color(b2, lv_color_hex(0x3a4658), 0);
+        lv_obj_set_style_radius(b2, 8, 0);
+        lv_obj_add_event_cb(b2, on_pin_select_next, LV_EVENT_CLICKED, (void *)(intptr_t)dev_idx);
+        lv_obj_t * l2 = lv_label_create(b2);
+        lv_obj_set_style_text_color(l2, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_text_font(l2, SF(14), 0);
+        lv_label_set_text(l2, ">");
+        lv_obj_center(l2);
     } else {
         int run = (D->type == HADEV_SCRIPT || D->type == HADEV_SCENE);
         P->btn = lv_btn_create(t);
@@ -1096,8 +1199,8 @@ static void open_inbox(lv_event_t * e) {
  * Called once per refresh tick from refresh_cb. */
 static void apply_offline_tile_visibility(void) {
     int hide = settings.hide_offline_tiles;
-    int energy_live = energy_connected();
-    int water_live  = settings.enable_p1_water && hw_state.connected_water;
+    int energy_live = energy_elec_connected();
+    int water_live  = energy_water_connected();
     int vent_live   = settings.enable_vent     && vent_state.connected;
     int family_live = settings.enable_ha;   /* family tile only needs the
                                              * HA poller running; absent
@@ -1183,12 +1286,15 @@ static void render_local_into(const char * id, lv_obj_t * title,
     if (sub) lv_label_set_text(sub, "");
     if (!strcmp(id, "local:energy")) {
         if (title) lv_label_set_text(title, "Energie");
-        if (main)  lv_label_set_text_fmt(main, "%.0f W", energy_power_w());
+        if (main)  lv_label_set_text_fmt(main, "%.0f W", energy_elec_power_w());
     } else if (!strcmp(id, "local:water")) {
         if (title) lv_label_set_text(title, "Water");
-        if (hw_state.connected_water) {
-            if (main) lv_label_set_text_fmt(main, "%.1f L/min", hw_state.water_lpm);
-            if (sub)  lv_label_set_text_fmt(sub, "%.2f m3", hw_state.water_total_m3);
+        if (energy_water_connected()) {
+            if (main && settings.energy_water_source == ENERGY_SRC_HW_P1)
+                lv_label_set_text_fmt(main, "%.1f L/min", hw_state.water_lpm);
+            else if (main)
+                lv_label_set_text_fmt(main, "%.2f m3", energy_water_m3());
+            if (sub) lv_label_set_text_fmt(sub, "%.2f m3", energy_water_m3());
         } else if (main) lv_label_set_text(main, "offline");
     } else if (!strcmp(id, "local:vent")) {
         if (title) lv_label_set_text(title, "Ventilatie");
@@ -1232,6 +1338,48 @@ static int rotate_member_at(int n, char * out, size_t sz) {
     }
     return 0;
 }
+
+/* Format a waste-pickup date the Dutch way: "Vandaag" / "Morgen" / "9 juni". */
+static const char * waste_when_nl(const char * iso_date, char * buf, size_t n) {
+    long days = waste_days_until(iso_date);
+    if (days == 0) { snprintf(buf, n, "Vandaag"); return buf; }
+    if (days == 1) { snprintf(buf, n, "Morgen");  return buf; }
+    static const char * const nl_month[12] = {
+        "januari", "februari", "maart", "april", "mei", "juni",
+        "juli", "augustus", "september", "oktober", "november", "december"};
+    int mo = atoi(iso_date + 5), dy = atoi(iso_date + 8);
+    snprintf(buf, n, "%d %s", dy, (mo >= 1 && mo <= 12) ? nl_month[mo - 1] : "");
+    return buf;
+}
+
+/* Vertically centre a waste row's icon on its date+type text block. The icons
+   are native-size and differ per type, so a fixed offset can't line them up. */
+static void waste_center_icon(lv_obj_t * icon, lv_obj_t * date, lv_obj_t * type) {
+    if (!icon || !date || !type) return;
+    lv_obj_update_layout(lv_obj_get_parent(icon));   /* sizes/positions current */
+    int cy = (lv_obj_get_y(date) + lv_obj_get_y(type) + lv_obj_get_height(type)) / 2;
+    lv_obj_align(icon, LV_ALIGN_TOP_LEFT, 4, cy - lv_obj_get_height(icon) / 2);
+}
+
+#ifdef TOON1
+/* Toon 1 only: show one headline at a time in the static ticker label and
+ * advance to the next on each call (driven by a slow timer, see
+ * screen_home_create). No per-frame animation -> the framebuffer is written
+ * only on a swap (every few seconds), which keeps the slow CPU responsive. */
+static int news_rot_idx = 0;
+static void news_rotate_tick(lv_timer_t * t) {
+    (void)t;
+    if (!news_ticker || !settings.news_enabled) return;
+    if (lv_obj_has_flag(news_ticker, LV_OBJ_FLAG_HIDDEN)) return;
+    int n = news_count();
+    if (n <= 0) { lv_label_set_text(news_ticker, "Geen nieuws"); return; }
+    if (news_rot_idx >= n) news_rot_idx = 0;
+    char ti[NEWS_TITLE_MAX];
+    if (news_item(news_rot_idx, ti, sizeof ti, NULL, 0) == 0)
+        lv_label_set_text(news_ticker, ti);
+    news_rot_idx = (news_rot_idx + 1) % n;
+}
+#endif
 
 static void refresh_cb(lv_timer_t * t) {
     (void)t;
@@ -1321,7 +1469,16 @@ static void refresh_cb(lv_timer_t * t) {
                     strncat(buf, ti, sizeof buf - strlen(buf) - 1);
                     if (i < nn - 1) strncat(buf, "    -    ", sizeof buf - strlen(buf) - 1);
                 }
-                lv_label_set_text(news_ticker, buf);
+#ifdef TOON1
+                /* Toon 1: static label, no per-frame scroll. Show the lead
+                 * headline now; news_rotate_tick() cycles the rest every few
+                 * seconds (touches the fb only on a swap). */
+                (void)buf;
+                lv_label_set_text(news_ticker, t0);
+                news_rot_idx = (news_count() > 1) ? 1 : 0;
+#else
+                lv_label_set_text(news_ticker, buf);   /* Toon 2: marquee scroll */
+#endif
             }
         } else {
             lv_obj_add_flag(news_ticker, LV_OBJ_FLAG_HIDDEN);
@@ -1566,8 +1723,8 @@ static void refresh_cb(lv_timer_t * t) {
         waste_pickup_t p1 = {0}, p2 = {0};
         int n = waste_state.connected ? waste_next_2_pickups(&p1, &p2) : 0;
         if (n >= 1) {
-            int mo = atoi(p1.date + 5), d = atoi(p1.date + 8);
-            lv_label_set_text_fmt(lbl_waste_date, "%d-%d", d, mo);
+            char wb1[24];
+            lv_label_set_text(lbl_waste_date, waste_when_nl(p1.date, wb1, sizeof wb1));
             lv_label_set_text(lbl_waste_type, p1.labels);
             if (tile_waste)   /* shrink to fit, never truncate, in narrow tiles */
                 fit_font(lbl_waste_type, p1.labels,
@@ -1576,6 +1733,7 @@ static void refresh_cb(lv_timer_t * t) {
                 lv_img_set_src(waste_icon_1, waste_icon_for_label(p1.labels));
                 lv_obj_set_style_img_recolor(waste_icon_1,
                     lv_color_hex(waste_accent_for_label(p1.labels)), 0);
+                waste_center_icon(waste_icon_1, lbl_waste_date, lbl_waste_type);
             }
         } else {
             lv_label_set_text(lbl_waste_date,
@@ -1584,8 +1742,8 @@ static void refresh_cb(lv_timer_t * t) {
                               waste_state.connected ? "geen" : "");
         }
         if (n >= 2 && lbl_waste_date_2 && lbl_waste_type_2 && waste_icon_2) {
-            int mo = atoi(p2.date + 5), d = atoi(p2.date + 8);
-            lv_label_set_text_fmt(lbl_waste_date_2, "%d-%d", d, mo);
+            char wb2[24];
+            lv_label_set_text(lbl_waste_date_2, waste_when_nl(p2.date, wb2, sizeof wb2));
             lv_label_set_text(lbl_waste_type_2, p2.labels);
             if (tile_waste)
                 fit_font(lbl_waste_type_2, p2.labels,
@@ -1594,6 +1752,7 @@ static void refresh_cb(lv_timer_t * t) {
             lv_obj_set_style_img_recolor(waste_icon_2,
                 lv_color_hex(waste_accent_for_label(p2.labels)), 0);
             lv_obj_clear_flag(waste_icon_2, LV_OBJ_FLAG_HIDDEN);
+            waste_center_icon(waste_icon_2, lbl_waste_date_2, lbl_waste_type_2);
         } else if (waste_icon_2) {
             lv_obj_add_flag(waste_icon_2, LV_OBJ_FLAG_HIDDEN);
             if (lbl_waste_date_2) lv_label_set_text(lbl_waste_date_2, "");
@@ -1612,15 +1771,15 @@ static void refresh_cb(lv_timer_t * t) {
        has taken over this slot. */
     if (!slot_active[TILE_SLOT_ENERGY]) {
         if (lbl_energy_w) {
-            if (energy_connected())
-                lv_label_set_text_fmt(lbl_energy_w, "%.0f W", energy_power_w());
+            if (energy_elec_connected())
+                lv_label_set_text_fmt(lbl_energy_w, "%.0f W", energy_elec_power_w());
             else
                 lv_label_set_text(lbl_energy_w, energy_offline_label());
         }
         if (lbl_energy_gas) {
             float g = energy_gas_m3();
             if (g >= 0) lv_label_set_text_fmt(lbl_energy_gas, "%.0f m3 gas", g);
-            else if (energy_connected()) lv_label_set_text(lbl_energy_gas, "via meter");
+            else if (energy_elec_connected()) lv_label_set_text(lbl_energy_gas, "via meter");
         }
     }
 
@@ -1779,6 +1938,9 @@ static void refresh_cb(lv_timer_t * t) {
                 else if (!D->on)
                     lv_slider_set_value(P->slider, 0, LV_ANIM_OFF);
             }
+        } else if (D->type == HADEV_SELECT) {
+            lv_label_set_text_fmt(P->lbl, "%s  %s", D->name,
+                                  D->state[0] ? D->state : "--");
         }
         /* script/scene: static label + Run button, nothing to refresh */
     }
@@ -1786,13 +1948,13 @@ static void refresh_cb(lv_timer_t * t) {
 
     /* Energy bottom tile: live power + cumulative gas. */
     if (lbl_bot_energy) {
-        if (energy_connected()) {
+        if (energy_elec_connected()) {
             float g = energy_gas_m3();
             if (g >= 0)
                 lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                      energy_power_w(), g);
+                                      energy_elec_power_w(), g);
             else
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_power_w());
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_elec_power_w());
         } else {
             lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }
@@ -1824,16 +1986,16 @@ static void refresh_cb(lv_timer_t * t) {
      * integration owns this slot. */
     if (!slot_active[TILE_SLOT_WATER]) {
         if (lbl_inbox_main) {
-            if (!settings.enable_p1_water)
+            if (!energy_water_connected())
                 lv_label_set_text(lbl_inbox_main, "offline");
-            else if (hw_state.connected_water)
-                lv_label_set_text_fmt(lbl_inbox_main, "%.3f m3", hw_state.water_total_m3);
+            else if (energy_water_connected())
+                lv_label_set_text_fmt(lbl_inbox_main, "%.3f m3", energy_water_m3());
             else
                 lv_label_set_text(lbl_inbox_main,
-                                  hw_state.polled_water ? "WTR offline" : "Initializing...");
+                                  (settings.energy_water_source == ENERGY_SRC_HW_P1 && !hw_state.polled_water) ? "Initializing..." : "WTR offline");
         }
         if (lbl_inbox_sub) {
-            if (!settings.enable_p1_water || !hw_state.connected_water) {
+            if (!energy_water_connected()) {
                 lv_label_set_text(lbl_inbox_sub, "");
             } else if (hw_state.water_lpm > 0.05f) {
                 lv_label_set_text_fmt(lbl_inbox_sub, "%.1f L/min  +%.1f L",
@@ -2041,13 +2203,13 @@ static void refresh_cb(lv_timer_t * t) {
 
     /* Energy bottom tile: live power + cumulative gas. */
     if (lbl_bot_energy) {
-        if (energy_connected()) {
+        if (energy_elec_connected()) {
             float g = energy_gas_m3();
             if (g >= 0)
                 lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                      energy_power_w(), g);
+                                      energy_elec_power_w(), g);
             else
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_power_w());
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_elec_power_w());
         } else {
             lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }
@@ -2079,16 +2241,16 @@ static void refresh_cb(lv_timer_t * t) {
      * integration owns this slot. */
     if (!slot_active[TILE_SLOT_WATER]) {
         if (lbl_inbox_main) {
-            if (!settings.enable_p1_water)
+            if (!energy_water_connected())
                 lv_label_set_text(lbl_inbox_main, "offline");
-            else if (hw_state.connected_water)
-                lv_label_set_text_fmt(lbl_inbox_main, "%.3f m3", hw_state.water_total_m3);
+            else if (energy_water_connected())
+                lv_label_set_text_fmt(lbl_inbox_main, "%.3f m3", energy_water_m3());
             else
                 lv_label_set_text(lbl_inbox_main,
-                                  hw_state.polled_water ? "WTR offline" : "Initializing...");
+                                  (settings.energy_water_source == ENERGY_SRC_HW_P1 && !hw_state.polled_water) ? "Initializing..." : "WTR offline");
         }
         if (lbl_inbox_sub) {
-            if (!settings.enable_p1_water || !hw_state.connected_water) {
+            if (!energy_water_connected()) {
                 lv_label_set_text(lbl_inbox_sub, "");
             } else if (hw_state.water_lpm > 0.05f) {
                 lv_label_set_text_fmt(lbl_inbox_sub, "%.1f L/min  +%.1f L",
@@ -2157,13 +2319,13 @@ static void refresh_cb(lv_timer_t * t) {
 
     /* Energy bottom tile: live power + cumulative gas. */
     if (lbl_bot_energy) {
-        if (energy_connected()) {
+        if (energy_elec_connected()) {
             float g = energy_gas_m3();
             if (g >= 0)
                 lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                      energy_power_w(), g);
+                                      energy_elec_power_w(), g);
             else
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_power_w());
+                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_elec_power_w());
         } else {
             lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }
@@ -2176,15 +2338,28 @@ static void refresh_cb(lv_timer_t * t) {
      * Splat-recovered duplicate of the earlier guarded block; same
      * marketplace-slot guard applies here. */
     if (!slot_active[TILE_SLOT_WATER]) {
-        if (lbl_inbox_main && hw_state.connected_water) {
-            lv_label_set_text_fmt(lbl_inbox_main, "%.3f m3", hw_state.water_total_m3);
+        if (lbl_inbox_main && energy_water_connected()) {
+            lv_label_set_text_fmt(lbl_inbox_main, "%.3f m3", energy_water_m3());
         }
-        if (lbl_inbox_sub && hw_state.connected_water) {
+        if (lbl_inbox_sub && energy_water_connected() &&
+            settings.energy_water_source == ENERGY_SRC_HW_P1) {
             lv_label_set_text_fmt(lbl_inbox_sub, "%.1f L/min", hw_state.water_lpm);
         }
     }
 
-    lv_obj_invalidate(scr_root);
+    /* Full-screen invalidate, throttled to every 20th tick (~10 s). Doing it
+       every 500 ms forced an 800×480 software redraw twice a second on the
+       uncached i.MX27 fb — a periodic hitch that read as a sluggish/stuttery
+       UI. Widgets changed in this callback already self-invalidate (via
+       lv_label_set_text / set_style / size changes invalidate their own old
+       and new rects), so per-frame correctness needs no sweep at all; this
+       rare 10 s pass is just insurance against stale pixels from edge cases
+       (e.g. an object shrinking to border_width 0). */
+    static int full_inval_ctr = 0;
+    if (++full_inval_ctr >= 20) {
+        full_inval_ctr = 0;
+        lv_obj_invalidate(scr_root);
+    }
 }
 
 /* ---------- screen builder ---------- */
@@ -2348,16 +2523,17 @@ static void on_news_item(lv_event_t * e) {
 /* Live ticker scroll-speed change from Settings (px/sec). */
 void screen_home_set_ticker_speed(int spd) {
     if (!news_ticker) return;
-    /* Below ~33 px/s the offset moves <1px per 30ms refresh, so the integer
-       scroll position steps once a second instead of gliding — looks broken
-       and choppy. Floor it to a smooth value. */
     if (spd < 30) spd = 30;
+    settings.news_scroll_speed = spd;
+#ifndef TOON1
+    /* Toon 2: rebuild the marquee animation at the new speed. lv_label only
+     * reads anim_speed when it (re)builds the scroll anim, so re-apply the
+     * long mode to make the change take effect immediately. */
     lv_obj_set_style_anim_speed(news_ticker, spd, 0);
-    /* lv_label only reads anim_speed when it (re)builds the scroll animation
-       inside lv_label_refr_text — setting the style alone leaves the running
-       anim at its old speed. Re-apply the long mode to rebuild it now so the
-       change is visible immediately rather than at the next headline rotation. */
     lv_label_set_long_mode(news_ticker, LV_LABEL_LONG_SCROLL_CIRCULAR);
+#endif
+    /* Toon 1 has no per-frame scroll (static rotating headline), so px/s is
+     * not used there — nothing to rebuild. */
 }
 static void news_list_rebuild(void);
 
@@ -3506,9 +3682,18 @@ lv_obj_t * screen_home_create(void) {
     /* News ticker — full-width strip at the top of the bottom band, above the
      * location + forecast. Tap opens the headline list + QR. */
     news_ticker = lv_label_create(scr_root);
+#ifdef TOON1
+    /* Toon 1 (400 MHz ARM926, no GPU, uncached fb): a continuously scrolling
+     * marquee re-renders + flushes a full-width pixel band to the slow
+     * framebuffer on every refresh, which feels sluggish and starves the rest
+     * of the UI. Use a static label clipped to width; news_rotate_tick()
+     * swaps in the next headline every few seconds (fb touched only on swap). */
+    lv_label_set_long_mode(news_ticker, LV_LABEL_LONG_DOT);
+#else
     lv_label_set_long_mode(news_ticker, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_obj_set_style_anim_speed(news_ticker,
         settings.news_scroll_speed >= 30 ? settings.news_scroll_speed : 30, 0);
+#endif
     lv_obj_set_width(news_ticker, SX(1000));
     lv_obj_align(news_ticker, LV_ALIGN_TOP_LEFT, SX(12), SY(432));
     lv_obj_set_style_text_color(news_ticker, lv_color_hex(0xcfe0f0), 0);
@@ -3517,6 +3702,9 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_add_flag(news_ticker, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(news_ticker, 12);
     lv_obj_add_event_cb(news_ticker, on_news_tap, LV_EVENT_CLICKED, NULL);
+#ifdef TOON1
+    if (!news_rot_timer) news_rot_timer = lv_timer_create(news_rotate_tick, 6000, NULL);
+#endif
     if (!settings.news_enabled) lv_obj_add_flag(news_ticker, LV_OBJ_FLAG_HIDDEN);
 
     /* --- Forecast band — fills the area below the upper-row tiles.

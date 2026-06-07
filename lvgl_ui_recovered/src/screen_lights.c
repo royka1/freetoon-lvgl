@@ -77,6 +77,38 @@ static void on_cover_open (lv_event_t * e) { int i = ev_idx(e); if (i>=0 && i<ha
 static void on_cover_stop (lv_event_t * e) { int i = ev_idx(e); if (i>=0 && i<ha_device_count) ha_device_cover_async(ha_devices[i].entity_id, "stop");  }
 static void on_cover_close(lv_event_t * e) { int i = ev_idx(e); if (i>=0 && i<ha_device_count) ha_device_cover_async(ha_devices[i].entity_id, "close"); }
 
+/* Cycle an input_select to the next / previous option.
+ * Parses D->options ("Open|Peek|Close"), finds the current state, and
+ * picks the neighbour. Wraps around at the ends. */
+static void select_cycle(int idx, int dir) {
+    if (idx < 0 || idx >= ha_device_count) return;
+    ha_device_t * D = &ha_devices[idx];
+    if (!D->options[0]) return;
+    /* Walk pipe-delimited options to build an index. */
+    char opts[256];
+    snprintf(opts, sizeof(opts), "%s", D->options);
+    int count = 0, cur = -1;
+    char * save = NULL;
+    for (char * tok = strtok_r(opts, "|", &save); tok; tok = strtok_r(NULL, "|", &save)) {
+        if (!strcmp(tok, D->state)) cur = count;
+        count++;
+    }
+    if (count == 0) return;
+    if (cur < 0) cur = 0;
+    int next = (cur + dir + count) % count;
+    /* Find the option at that index again. */
+    snprintf(opts, sizeof(opts), "%s", D->options);
+    save = NULL;
+    int n = 0; const char * target = NULL;
+    for (char * tok = strtok_r(opts, "|", &save); tok; tok = strtok_r(NULL, "|", &save)) {
+        if (n == next) { target = tok; break; }
+        n++;
+    }
+    if (target) ha_device_select_option_async(D->entity_id, target);
+}
+static void on_select_prev(lv_event_t * e) { select_cycle(ev_idx(e), -1); }
+static void on_select_next(lv_event_t * e) { select_cycle(ev_idx(e),  1); }
+
 /* ---- row builders ---- */
 static lv_obj_t * make_card(int h) {
     lv_obj_t * c = lv_obj_create(list);
@@ -168,6 +200,14 @@ static void build_dev_row(int i) {
         R->btn_lbl = lv_obj_get_child(R->btn, 0);
         break;
     }
+    case HADEV_SELECT: {
+        lv_obj_t * c = make_card(56);
+        card_name(c, D->name, LV_ALIGN_LEFT_MID, 4, -8);
+        R->lbl_state = mk_state(c, LV_ALIGN_LEFT_MID, 4, 12);
+        mk_btn(c, "<",  0x3a4658, 36, 30, LV_ALIGN_RIGHT_MID, -48, 0, on_select_prev, i);
+        mk_btn(c, ">",  0x3a4658, 36, 30, LV_ALIGN_RIGHT_MID,  -2, 0, on_select_next, i);
+        break;
+    }
     default: {   /* HADEV_SCRIPT / HADEV_SCENE — stateless Run button */
         lv_obj_t * c = make_card(56);
         card_name(c, D->name, LV_ALIGN_LEFT_MID, 4, 0);
@@ -207,8 +247,8 @@ static void rebuild_rows(void) {
 
     const struct { int type; const char * hdr; } groups[] = {
         { HADEV_LIGHT,  "Lights"  }, { HADEV_COVER,  "Covers"  },
-        { HADEV_SWITCH, "Switches"}, { HADEV_SCRIPT, "Scripts" },
-        { HADEV_SCENE,  "Scenes"  },
+        { HADEV_SWITCH, "Switches"}, { HADEV_SELECT, "Selects" },
+        { HADEV_SCRIPT, "Scripts" }, { HADEV_SCENE,  "Scenes"  },
     };
     for (size_t g = 0; g < sizeof(groups)/sizeof(groups[0]); g++) {
         int any = 0;
@@ -274,6 +314,11 @@ static void refresh_cb(lv_timer_t * t) {
                     else if (!D->on)
                         lv_slider_set_value(R->slider, 0, LV_ANIM_OFF);
                 }
+            }
+        } else if (D->type == HADEV_SELECT) {
+            if (R->lbl_state) {
+                lv_label_set_text(R->lbl_state, D->state[0] ? D->state : "--");
+                lv_obj_set_style_text_color(R->lbl_state, lv_color_hex(COL_TEXT_DIM), 0);
             }
         }
     }

@@ -327,6 +327,7 @@ static void settings_attach_kb_async(void * panel) { settings_attach_kb_tree((lv
 /* ============================ modal infra ============================ */
 
 static void modal_timer_cb(lv_timer_t * t) { (void)t; if (modal_tick_fn) modal_tick_fn(); }
+static void energy_save_textareas(void);  /* forward — defined in the integrations modal section */
 
 static void modal_close(lv_event_t * e) {
     (void)e;
@@ -341,6 +342,7 @@ static void modal_close(lv_event_t * e) {
     }
     if (e) lv_event_stop_bubbling(e); /* prevent the click from bubbling to the
                                          backdrop and firing modal_close twice */
+    energy_save_textareas();          /* flush entity fields before saving */
     settings_save();                  /* persist whatever the modal changed */
 }
 
@@ -1851,18 +1853,33 @@ static void open_uimode_modal(lv_event_t * e) {
 }
 
 /* ==================== Integrations modal ====================
- * Runtime on/off switches for the optional integrations. Toggles persist
- * to /mnt/data/toonui.cfg via modal_close → settings_save, but the
- * pollers only re-check the flags on (re)start, so the modal warns the
- * user that flipping a switch needs a toonui restart to fully take
- * effect (killing the proc → inittab respawns it cleanly). */
+ * Per-resource energy/water source selection with conditional UI:
+ * dropdowns for Electricity, Gas, Water — each showing the right config
+ * fields (HA entity picker, P1 host) based on the chosen source. */
 static lv_obj_t * lbl_integ_hint;
-static lv_obj_t * sw_int_p1_elec;
-static lv_obj_t * sw_int_p1_water;
 static lv_obj_t * sw_int_vent;
 static lv_obj_t * sw_int_ha;
 static lv_obj_t * sw_int_hide_offline;
-static lv_obj_t * sw_int_energy_src;
+
+/* Energy dropdowns and conditional rows */
+static lv_obj_t * dd_elec_src, * dd_gas_src, * dd_water_src;
+static lv_obj_t * row_elec_ha_cons, * ta_elec_ha_cons;
+static lv_obj_t * row_elec_ha_prod, * ta_elec_ha_prod;
+static lv_obj_t * row_elec_hw_host, * ta_elec_hw_host;
+static lv_obj_t * row_gas_ha, * ta_gas_ha;
+static lv_obj_t * row_gas_hw_note;
+static lv_obj_t * row_water_ha, * ta_water_ha;
+static lv_obj_t * row_water_hw_host, * ta_water_hw_host;
+static lv_obj_t * lbl_gas_header;    /* "Gas source:" label — repositioned on elec change */
+static lv_obj_t * lbl_water_header;  /* "Water source:" label */
+static lv_obj_t * toggle_vent_row;   /* first toggle row after the energy section */
+static lv_obj_t * toggle_ha_row;
+static lv_obj_t * toggle_hide_row;
+static lv_obj_t * btn_ha_entities;   /* "Configure HA entities..." button */
+
+static const char * elec_src_opts = "Off\nHome Assistant\nHomeWizard P1\nZ-Wave adapter";
+static const char * gas_src_opts  = "Off\nHome Assistant\nHomeWizard P1\nZ-Wave adapter";
+static const char * water_src_opts = "Off\nHome Assistant\nHomeWizard P1";
 
 static void integ_dirty_hint(void) {
     if (!lbl_integ_hint) return;
@@ -1872,70 +1889,365 @@ static void integ_dirty_hint(void) {
     lv_obj_set_style_text_color(lbl_integ_hint, lv_color_hex(0xffcc66), 0);
 }
 
-static void on_int_p1_elec(lv_event_t * e) {
-    settings.enable_p1_elec  = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
-    integ_dirty_hint();
-}
-static void on_int_p1_water(lv_event_t * e) {
-    settings.enable_p1_water = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
-    integ_dirty_hint();
-}
 static void on_int_vent(lv_event_t * e) {
-    settings.enable_vent     = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+    settings.enable_vent = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
     integ_dirty_hint();
 }
 static void on_int_ha(lv_event_t * e) {
-    settings.enable_ha       = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+    settings.enable_ha = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
     integ_dirty_hint();
 }
-/* Hide-offline-tiles toggle. Takes effect on the next refresh tick — no
- * restart needed because apply_offline_tile_visibility() reads the flag
- * fresh every time. Doesn't dirty the integ_hint (no restart required). */
 static void on_int_hide_offline(lv_event_t * e) {
     settings.hide_offline_tiles =
         lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
 }
-/* Energy source: OFF = meteradapter (Toon's own meter, default), ON = HomeWizard
- * P1. Live — both pollers always run, the Energy tile just reads the chosen one,
- * so no restart needed (persist it though). */
-static void on_int_energy_src(lv_event_t * e) {
-    settings.energy_source =
-        lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+
+/* Flush textarea edits to settings — called before every settings_save in
+ * the energy section. */
+static void energy_save_textareas(void) {
+    if (ta_elec_ha_cons)
+        snprintf(settings.energy_elec_ha_entity, sizeof settings.energy_elec_ha_entity,
+                 "%s", lv_textarea_get_text(ta_elec_ha_cons));
+    if (ta_elec_ha_prod)
+        snprintf(settings.energy_elec_prod_ha_entity, sizeof settings.energy_elec_prod_ha_entity,
+                 "%s", lv_textarea_get_text(ta_elec_ha_prod));
+    if (ta_elec_hw_host)
+        snprintf(settings.p1_elec_host, sizeof settings.p1_elec_host,
+                 "%s", lv_textarea_get_text(ta_elec_hw_host));
+    if (ta_gas_ha)
+        snprintf(settings.energy_gas_ha_entity, sizeof settings.energy_gas_ha_entity,
+                 "%s", lv_textarea_get_text(ta_gas_ha));
+    if (ta_water_ha)
+        snprintf(settings.energy_water_ha_entity, sizeof settings.energy_water_ha_entity,
+                 "%s", lv_textarea_get_text(ta_water_ha));
+    if (ta_water_hw_host)
+        snprintf(settings.p1_water_host, sizeof settings.p1_water_host,
+                 "%s", lv_textarea_get_text(ta_water_hw_host));
+}
+
+/* Show/hide conditional rows for electricity based on dropdown selection. */
+static void energy_elec_update_vis(void) {
+    int src = lv_dropdown_get_selected(dd_elec_src);
+    settings.energy_elec_source = src;
+    energy_save_textareas();
+    if (row_elec_ha_cons) {
+        if (src == ENERGY_SRC_HA) lv_obj_clear_flag(row_elec_ha_cons, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row_elec_ha_cons, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (row_elec_ha_prod) {
+        if (src == ENERGY_SRC_HA) lv_obj_clear_flag(row_elec_ha_prod, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row_elec_ha_prod, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (row_elec_hw_host) {
+        if (src == ENERGY_SRC_HW_P1) lv_obj_clear_flag(row_elec_hw_host, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row_elec_hw_host, LV_OBJ_FLAG_HIDDEN);
+    }
     settings_save();
+}
+static void energy_gas_update_vis(void) {
+    int src = lv_dropdown_get_selected(dd_gas_src);
+    settings.energy_gas_source = src;
+    energy_save_textareas();
+    if (row_gas_ha) {
+        if (src == ENERGY_SRC_HA) lv_obj_clear_flag(row_gas_ha, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row_gas_ha, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (row_gas_hw_note) {
+        if (src == ENERGY_SRC_HW_P1) lv_obj_clear_flag(row_gas_hw_note, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row_gas_hw_note, LV_OBJ_FLAG_HIDDEN);
+    }
+    settings_save();
+}
+static void energy_water_update_vis(void) {
+    int src = lv_dropdown_get_selected(dd_water_src);
+    settings.energy_water_source = src;
+    energy_save_textareas();
+    if (row_water_ha) {
+        if (src == ENERGY_SRC_HA) lv_obj_clear_flag(row_water_ha, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row_water_ha, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (row_water_hw_host) {
+        if (src == ENERGY_SRC_HW_P1) lv_obj_clear_flag(row_water_hw_host, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row_water_hw_host, LV_OBJ_FLAG_HIDDEN);
+    }
+    settings_save();
+}
+
+/* Reposition every element below the electricity section so the layout
+ * doesn't leave large gaps when conditional rows are hidden (e.g. Off). */
+static void energy_relayout(void) {
+    if (!lbl_gas_header || !dd_elec_src) return;
+
+    int y = 70;          /* top of electricity label */
+    y += 28 + 4;         /* past the elec dropdown */
+
+    int src = lv_dropdown_get_selected(dd_elec_src);
+    if (src == ENERGY_SRC_HA)      y += 138;     /* 2 rows (cons+prod) */
+    else if (src == ENERGY_SRC_HW_P1) y += 70;
+
+    y += 16;             /* section gap */
+
+    /* ---- Gas section ---- */
+    lv_obj_set_pos(lbl_gas_header, SX(4), SY(y));
+    lv_obj_set_pos(dd_gas_src, SX(4), SY(y + 28));
+    int gas_after_dd = y + 28 + 4;
+    src = lv_dropdown_get_selected(dd_gas_src);
+    if (src == ENERGY_SRC_HA) {
+        lv_obj_set_pos(row_gas_ha, SX(4), SY(gas_after_dd));
+        y = gas_after_dd + 70;
+    } else if (src == ENERGY_SRC_HW_P1) {
+        lv_obj_set_pos(row_gas_hw_note, SX(4), SY(gas_after_dd));
+        y = gas_after_dd + 48;
+    } else {
+        y = gas_after_dd;
+    }
+
+    y += 16;             /* section gap */
+
+    /* ---- Water section ---- */
+    lv_obj_set_pos(lbl_water_header, SX(4), SY(y));
+    lv_obj_set_pos(dd_water_src, SX(4), SY(y + 28));
+    int water_after_dd = y + 28 + 4;
+    src = lv_dropdown_get_selected(dd_water_src);
+    if (src == ENERGY_SRC_HA) {
+        lv_obj_set_pos(row_water_ha, SX(4), SY(water_after_dd));
+        y = water_after_dd + 70;
+    } else if (src == ENERGY_SRC_HW_P1) {
+        lv_obj_set_pos(row_water_hw_host, SX(4), SY(water_after_dd));
+        y = water_after_dd + 70;
+    } else {
+        y = water_after_dd;
+    }
+
+    y += 24;             /* spacing before toggle section */
+
+    /* ---- Toggles + button ---- */
+    if (toggle_vent_row) { lv_obj_set_pos(toggle_vent_row, SX(4), SY(y)); y += 84; }
+    if (toggle_ha_row)   { lv_obj_set_pos(toggle_ha_row,   SX(4), SY(y)); y += 84; }
+    if (toggle_hide_row) { lv_obj_set_pos(toggle_hide_row, SX(4), SY(y)); y += 92; }
+    if (lbl_integ_hint)  { lv_obj_set_pos(lbl_integ_hint,  SX(4), SY(y)); y += 60; }
+    if (btn_ha_entities) { lv_obj_set_pos(btn_ha_entities, SX(4), SY(y)); }
+}
+
+static void on_elec_src_change(lv_event_t * e) { (void)e; energy_elec_update_vis(); energy_relayout(); }
+static void on_gas_src_change(lv_event_t * e)  { (void)e; energy_gas_update_vis(); energy_relayout(); }
+static void on_water_src_change(lv_event_t * e){ (void)e; energy_water_update_vis(); energy_relayout(); }
+
+/* Browse-button callback for energy sensor pickers. */
+struct energy_browse_ctx {
+    lv_obj_t * ta;
+    char       domain[16];
+};
+static void on_energy_browse(lv_event_t * e) {
+    struct energy_browse_ctx * ctx = lv_event_get_user_data(e);
+    screen_ha_picker_open(ctx->domain, ctx->ta);
+    free(ctx);
+}
+
+static lv_obj_t * energy_browse_btn(lv_obj_t * parent, lv_obj_t * ta, const char * domain) {
+    lv_obj_t * btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, SX(60), SY(38));
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x335577), 0);
+    lv_obj_set_style_radius(btn, 8, 0);
+    lv_obj_t * bl = lv_label_create(btn);
+    lv_label_set_text(bl, "...");
+    lv_obj_set_style_text_color(bl, lv_color_hex(0xffffff), 0);
+    lv_obj_center(bl);
+    struct energy_browse_ctx * ctx = malloc(sizeof *ctx);
+    if (ctx) { ctx->ta = ta; snprintf(ctx->domain, sizeof ctx->domain, "%s", domain); }
+    lv_obj_add_event_cb(btn, on_energy_browse, LV_EVENT_CLICKED, ctx);
+    return btn;
+}
+
+/* Small labelled text field + optional browse button inside a panel row.
+ * Returns the textarea. */
+static lv_obj_t * energy_field(lv_obj_t * p, int x, int y, int w,
+                                const char * lbl, const char * val,
+                                int browse, const char * domain) {
+    lv_obj_t * label = lv_label_create(p);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xc0d0e0), 0);
+    lv_obj_set_style_text_font(label, SF(16), 0);
+    lv_label_set_text(label, lbl);
+    lv_obj_align(label, LV_ALIGN_TOP_LEFT, SX(x), SY(y));
+    int ta_x = browse ? x + w - 300 : x;
+    int ta_w = browse ? 232 : w;
+    lv_obj_t * ta = lv_textarea_create(p);
+    lv_obj_set_size(ta, SX(ta_w), SY(38));
+    lv_obj_align(ta, LV_ALIGN_TOP_LEFT, SX(ta_x), SY(y + 20));
+    lv_textarea_set_one_line(ta, true);
+    lv_textarea_set_text(ta, val ? val : "");
+    if (browse) {
+        lv_obj_t * btn = energy_browse_btn(p, ta, domain);
+        lv_obj_align(btn, LV_ALIGN_TOP_LEFT, SX(ta_x + ta_w + 8), SY(y + 20));
+    }
+    return ta;
 }
 
 static void open_ha_entities_modal(lv_event_t * e);
 
 static void open_integrations_modal(lv_event_t * e) {
     (void)e;
-    /* Five panel_rows × 84 + 92 + 100 (hint label) ≈ 612. Bump the modal
-     * height so the hide-offline switch + hint actually fit. */
-    lv_obj_t * p = modal_open("Integrations", 710);
+    /* Energy source section (3 dropdowns + conditional fields) + 3 switches
+     * + hint + HA button. Modal height bumped to fit everything. */
+    lv_obj_t * p = modal_open("Integrations", 1100);
+    lv_obj_add_flag(p, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(p, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(p, LV_SCROLLBAR_MODE_AUTO);
     int y = 70;
 
-    lv_obj_t * r;
-    r = panel_row(p, y, "Energy source: ON = HomeWizard P1, OFF = meteradapter", NULL);
-    sw_int_energy_src = row_switch(r, settings.energy_source, on_int_energy_src);
+    /* ---- Electricity ---- */
+    lv_obj_t * le = lv_label_create(p);
+    lv_obj_set_style_text_color(le, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(le, SF(22), 0);
+    lv_label_set_text(le, "Electricity source:");
+    lv_obj_align(le, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
+    dd_elec_src = lv_dropdown_create(p);
+    lv_obj_align(dd_elec_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
+    lv_obj_set_width(dd_elec_src, SX(340));
+    lv_dropdown_set_options(dd_elec_src, elec_src_opts);
+    lv_dropdown_set_selected(dd_elec_src, settings.energy_elec_source);
+    lv_obj_add_event_cb(dd_elec_src, on_elec_src_change, LV_EVENT_VALUE_CHANGED, NULL);
+
+    /* HA consumption sensor row */
+    row_elec_ha_cons = lv_obj_create(p);
+    lv_obj_set_size(row_elec_ha_cons, SX(824), SY(66));
+    lv_obj_set_style_bg_color(row_elec_ha_cons, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_elec_ha_cons, 0, 0);
+    lv_obj_set_style_radius(row_elec_ha_cons, 8, 0);
+    lv_obj_set_style_pad_all(row_elec_ha_cons, 6, 0);
+    lv_obj_clear_flag(row_elec_ha_cons, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_elec_ha_cons, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
+    ta_elec_ha_cons = energy_field(row_elec_ha_cons, 4, -6, 760,
+        "HA consumption sensor (W):", settings.energy_elec_ha_entity, 1, "sensor");
+    if (settings.energy_elec_source != ENERGY_SRC_HA)
+        lv_obj_add_flag(row_elec_ha_cons, LV_OBJ_FLAG_HIDDEN);
+
+    /* HA production sensor row */
+    row_elec_ha_prod = lv_obj_create(p);
+    lv_obj_set_size(row_elec_ha_prod, SX(824), SY(66));
+    lv_obj_set_style_bg_color(row_elec_ha_prod, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_elec_ha_prod, 0, 0);
+    lv_obj_set_style_radius(row_elec_ha_prod, 8, 0);
+    lv_obj_set_style_pad_all(row_elec_ha_prod, 6, 0);
+    lv_obj_clear_flag(row_elec_ha_prod, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_elec_ha_prod, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 144));
+    ta_elec_ha_prod = energy_field(row_elec_ha_prod, 4, -6, 760,
+        "HA production/solar sensor (W, optional):", settings.energy_elec_prod_ha_entity, 1, "sensor");
+    if (settings.energy_elec_source != ENERGY_SRC_HA)
+        lv_obj_add_flag(row_elec_ha_prod, LV_OBJ_FLAG_HIDDEN);
+
+    /* HW P1 host row */
+    row_elec_hw_host = lv_obj_create(p);
+    lv_obj_set_size(row_elec_hw_host, SX(824), SY(66));
+    lv_obj_set_style_bg_color(row_elec_hw_host, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_elec_hw_host, 0, 0);
+    lv_obj_set_style_radius(row_elec_hw_host, 8, 0);
+    lv_obj_set_style_pad_all(row_elec_hw_host, 6, 0);
+    lv_obj_clear_flag(row_elec_hw_host, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_elec_hw_host, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
+    ta_elec_hw_host = energy_field(row_elec_hw_host, 4, -6, 760,
+        "HomeWizard P1 host (shared with gas):", settings.p1_elec_host, 0, NULL);
+    ta_make_numeric(ta_elec_hw_host);
+    if (settings.energy_elec_source != ENERGY_SRC_HW_P1)
+        lv_obj_add_flag(row_elec_hw_host, LV_OBJ_FLAG_HIDDEN);
+
+    y += 214;
+
+    /* ---- Gas ---- */
+    lbl_gas_header = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_gas_header, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_gas_header, SF(22), 0);
+    lv_label_set_text(lbl_gas_header, "Gas source:");
+    lv_obj_align(lbl_gas_header, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
+    dd_gas_src = lv_dropdown_create(p);
+    lv_obj_align(dd_gas_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
+    lv_obj_set_width(dd_gas_src, SX(340));
+    lv_dropdown_set_options(dd_gas_src, gas_src_opts);
+    lv_dropdown_set_selected(dd_gas_src, settings.energy_gas_source);
+    lv_obj_add_event_cb(dd_gas_src, on_gas_src_change, LV_EVENT_VALUE_CHANGED, NULL);
+
+    row_gas_ha = lv_obj_create(p);
+    lv_obj_set_size(row_gas_ha, SX(824), SY(66));
+    lv_obj_set_style_bg_color(row_gas_ha, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_gas_ha, 0, 0);
+    lv_obj_set_style_radius(row_gas_ha, 8, 0);
+    lv_obj_set_style_pad_all(row_gas_ha, 6, 0);
+    lv_obj_clear_flag(row_gas_ha, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_gas_ha, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
+    ta_gas_ha = energy_field(row_gas_ha, 4, -6, 760,
+        "HA gas sensor (m³):", settings.energy_gas_ha_entity, 1, "sensor");
+    if (settings.energy_gas_source != ENERGY_SRC_HA)
+        lv_obj_add_flag(row_gas_ha, LV_OBJ_FLAG_HIDDEN);
+
+    row_gas_hw_note = lv_obj_create(p);
+    lv_obj_set_size(row_gas_hw_note, SX(824), SY(40));
+    lv_obj_set_style_bg_color(row_gas_hw_note, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_gas_hw_note, 0, 0);
+    lv_obj_set_style_radius(row_gas_hw_note, 8, 0);
+    lv_obj_set_style_pad_all(row_gas_hw_note, 6, 0);
+    lv_obj_clear_flag(row_gas_hw_note, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_gas_hw_note, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
+    lv_obj_t * ghn = lv_label_create(row_gas_hw_note);
+    lv_obj_set_style_text_color(ghn, lv_color_hex(0x88aabb), 0);
+    lv_obj_set_style_text_font(ghn, SF(16), 0);
+    lv_label_set_text(ghn, "Uses the same HomeWizard P1 host as electricity.");
+    lv_obj_align(ghn, LV_ALIGN_TOP_LEFT, SX(4), SY(0));
+    if (settings.energy_gas_source != ENERGY_SRC_HW_P1)
+        lv_obj_add_flag(row_gas_hw_note, LV_OBJ_FLAG_HIDDEN);
+
+    y += 138;
+
+    /* ---- Water ---- */
+    lbl_water_header = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_water_header, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_font(lbl_water_header, SF(22), 0);
+    lv_label_set_text(lbl_water_header, "Water source:");
+    lv_obj_align(lbl_water_header, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
+    dd_water_src = lv_dropdown_create(p);
+    lv_obj_align(dd_water_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
+    lv_obj_set_width(dd_water_src, SX(340));
+    lv_dropdown_set_options(dd_water_src, water_src_opts);
+    lv_dropdown_set_selected(dd_water_src, settings.energy_water_source);
+    lv_obj_add_event_cb(dd_water_src, on_water_src_change, LV_EVENT_VALUE_CHANGED, NULL);
+
+    row_water_ha = lv_obj_create(p);
+    lv_obj_set_size(row_water_ha, SX(824), SY(66));
+    lv_obj_set_style_bg_color(row_water_ha, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_water_ha, 0, 0);
+    lv_obj_set_style_radius(row_water_ha, 8, 0);
+    lv_obj_set_style_pad_all(row_water_ha, 6, 0);
+    lv_obj_clear_flag(row_water_ha, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_water_ha, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
+    ta_water_ha = energy_field(row_water_ha, 4, -6, 760,
+        "HA water sensor (m³):", settings.energy_water_ha_entity, 1, "sensor");
+    if (settings.energy_water_source != ENERGY_SRC_HA)
+        lv_obj_add_flag(row_water_ha, LV_OBJ_FLAG_HIDDEN);
+
+    row_water_hw_host = lv_obj_create(p);
+    lv_obj_set_size(row_water_hw_host, SX(824), SY(66));
+    lv_obj_set_style_bg_color(row_water_hw_host, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_water_hw_host, 0, 0);
+    lv_obj_set_style_radius(row_water_hw_host, 8, 0);
+    lv_obj_set_style_pad_all(row_water_hw_host, 6, 0);
+    lv_obj_clear_flag(row_water_hw_host, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_water_hw_host, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
+    ta_water_hw_host = energy_field(row_water_hw_host, 4, -6, 760,
+        "HomeWizard HWE-WTR host:", settings.p1_water_host, 0, NULL);
+    ta_make_numeric(ta_water_hw_host);
+    if (settings.energy_water_source != ENERGY_SRC_HW_P1)
+        lv_obj_add_flag(row_water_hw_host, LV_OBJ_FLAG_HIDDEN);
+
+    /* ---- Remaining integration toggles ---- */
+    toggle_vent_row = panel_row(p, y, "Itho ventilation", NULL);
+    sw_int_vent = row_switch(toggle_vent_row, settings.enable_vent, on_int_vent);
     y += 84;
 
-    r = panel_row(p, y, "HomeWizard P1 (electricity + gas)", NULL);
-    sw_int_p1_elec = row_switch(r, settings.enable_p1_elec, on_int_p1_elec);
+    toggle_ha_row = panel_row(p, y, "Home Assistant (curtains, Life360)", NULL);
+    sw_int_ha = row_switch(toggle_ha_row, settings.enable_ha, on_int_ha);
     y += 84;
 
-    r = panel_row(p, y, "HomeWizard HWE-WTR (water)", NULL);
-    sw_int_p1_water = row_switch(r, settings.enable_p1_water, on_int_p1_water);
-    y += 84;
-
-    r = panel_row(p, y, "Itho ventilation", NULL);
-    sw_int_vent = row_switch(r, settings.enable_vent, on_int_vent);
-    y += 84;
-
-    r = panel_row(p, y, "Home Assistant (curtains, Life360)", NULL);
-    sw_int_ha = row_switch(r, settings.enable_ha, on_int_ha);
-    y += 84;
-
-    r = panel_row(p, y, "Hide offline tiles entirely", NULL);
-    sw_int_hide_offline = row_switch(r, settings.hide_offline_tiles, on_int_hide_offline);
+    toggle_hide_row = panel_row(p, y, "Hide offline tiles entirely", NULL);
+    sw_int_hide_offline = row_switch(toggle_hide_row, settings.hide_offline_tiles, on_int_hide_offline);
     y += 92;
 
     lbl_integ_hint = lv_label_create(p);
@@ -1949,16 +2261,19 @@ static void open_integrations_modal(lv_event_t * e) {
         "Toggle a switch then restart toonui.");
     lv_obj_align(lbl_integ_hint, LV_ALIGN_TOP_LEFT, SX(4), y);
 
-    /* Button to open the HA entity configuration modal. */
-    lv_obj_t * b_ha = lv_btn_create(p);
-    lv_obj_set_size(b_ha, SX(420), SY(50));
-    lv_obj_align(b_ha, LV_ALIGN_TOP_LEFT, SX(4), y + 60);
-    lv_obj_set_style_bg_color(b_ha, lv_color_hex(0x335577), 0);
-    lv_obj_add_event_cb(b_ha, open_ha_entities_modal, LV_EVENT_CLICKED, NULL);
-    lv_obj_t * bhl = lv_label_create(b_ha);
+    btn_ha_entities = lv_btn_create(p);
+    lv_obj_set_size(btn_ha_entities, SX(420), SY(50));
+    lv_obj_align(btn_ha_entities, LV_ALIGN_TOP_LEFT, SX(4), y + 60);
+    lv_obj_set_style_bg_color(btn_ha_entities, lv_color_hex(0x335577), 0);
+    lv_obj_add_event_cb(btn_ha_entities, open_ha_entities_modal, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * bhl = lv_label_create(btn_ha_entities);
     lv_obj_set_style_text_color(bhl, lv_color_hex(0xffffff), 0);
     lv_label_set_text(bhl, "Configure HA entities...");
     lv_obj_center(bhl);
+
+    /* Correct layout immediately so the initial positions match the
+     * current source selections rather than the creation-time defaults. */
+    energy_relayout();
 }
 
 /* ============== HA entity configuration modal ============== */
@@ -3408,6 +3723,14 @@ static void on_mqtt_enabled_change(lv_event_t * e) {
     settings_save();
 }
 
+/* Domoticz reads/control over its native MQTT gateway. Restart the subscriber
+ * so it (un)subscribes to domoticz/out. (HA uses the WebSocket, not MQTT.) */
+static void on_mqtt_domoticz_change(lv_event_t * e) {
+    settings.mqtt_domoticz = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
+    settings_save();
+    mqtt_client_restart();
+}
+
 static void open_mqtt_modal(lv_event_t * e) {
     (void)e;
     lv_obj_t * p = modal_open("MQTT", 760);
@@ -3420,6 +3743,12 @@ static void open_mqtt_modal(lv_event_t * e) {
      * otherwise always runs whenever a host is configured). */
     lv_obj_t * r_en = panel_row(p, y, "MQTT enabled", NULL);
     row_switch(r_en, settings.mqtt_enabled, on_mqtt_enabled_change);
+    y += 82;
+
+    /* Domoticz device reads + control over its native MQTT Client Gateway
+     * (domoticz/out + domoticz/in). HA reads/controls over its WebSocket. */
+    lv_obj_t * r_dz = panel_row(p, y, "Domoticz via MQTT", NULL);
+    row_switch(r_dz, settings.mqtt_domoticz, on_mqtt_domoticz_change);
     y += 82;
 
     /* Host */

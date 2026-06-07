@@ -535,32 +535,45 @@ static void refresh_cb(lv_timer_t * t) {
         }
     }
 
-    /* Usage bars: energy now (W) + gas trailing-hour (m³), gated on
+    /* Usage bars: energy now (W) + gas trailing-hour (m³/h), gated on
      * show_dim_bars. Side assignment honours dim_bars_swap; default (swap off)
-     * = gas LEFT, energy RIGHT. Gas needs the P1; energy follows energy_source. */
+     * = gas LEFT, energy RIGHT. Each bar reads from its independently-
+     * configured source (ENERGY_SRC_* in settings). */
     if (bar_l_env) {
-        int   e_conn = (settings.energy_source == 0)
-                         ? meter_state.connected
-                         : (settings.enable_p1_elec && hw_state.connected_p1);
-        float e = (settings.energy_source == 0) ? meter_state.power_w
-                                                : hw_state.power_w;
-        if (e < 0) e = 0;                          /* export -> empty */
+        /* Electricity bar — per-source dispatch */
+        int   e_conn;
+        float e;
+        switch (settings.energy_elec_source) {
+        case ENERGY_SRC_ZWAVE: e_conn = meter_state.connected; e = meter_state.power_w; break;
+        case ENERGY_SRC_HW_P1: e_conn = hw_state.connected_p1; e = hw_state.power_w; break;
+        case ENERGY_SRC_HA:    e_conn = ha_energy.connected;   e = ha_energy.power_w; break;
+        default:               e_conn = 0; e = 0; break;
+        }
+        if (e < 0) e = 0;
         float er = e / DIM_E_FULL_W;
         char etxt[24];
         if (e >= 1000) snprintf(etxt, sizeof etxt, "%.1f kW", e / 1000.0f);
         else           snprintf(etxt, sizeof etxt, "%.0f W", e);
 
-        int   g_conn = hw_state.connected_p1;
-        float g = hw_state.gas_hour_m3; if (g < 0) g = 0;
+        /* Gas bar — per-source dispatch for hourly m³/h */
+        int   g_conn;
+        float g;
+        switch (settings.energy_gas_source) {
+        case ENERGY_SRC_ZWAVE: g_conn = meter_state.gas_connected; g = meter_state.gas_hour_m3; break;
+        case ENERGY_SRC_HW_P1: g_conn = hw_state.connected_p1;     g = hw_state.gas_hour_m3; break;
+        case ENERGY_SRC_HA:    g_conn = ha_energy.connected;       g = ha_energy.gas_hour_m3; break;
+        default:               g_conn = 0; g = 0; break;
+        }
+        if (g < 0) g = 0;
         float gr = g / DIM_G_FULL_M3H;
         char gtxt[24];
         snprintf(gtxt, sizeof gtxt, "%.2f m3/h", g);
 
         int show = settings.show_dim_bars;
-        if (!settings.dim_bars_swap) {             /* default: gas LEFT, energy RIGHT */
+        if (!settings.dim_bars_swap) {
             dim_bar_set(bar_l_env, bar_l_fill, bar_l_cap, -1, show && g_conn, 0, gr, 0xffaa33, gtxt);
             dim_bar_set(bar_r_env, bar_r_fill, bar_r_cap, +1, show && e_conn, 0, er, 0xffffff, etxt);
-        } else {                                   /* swapped: energy LEFT, gas RIGHT */
+        } else {
             dim_bar_set(bar_l_env, bar_l_fill, bar_l_cap, -1, show && e_conn, 0, er, 0xffffff, etxt);
             dim_bar_set(bar_r_env, bar_r_fill, bar_r_cap, +1, show && g_conn, 0, gr, 0xffaa33, gtxt);
         }

@@ -43,6 +43,19 @@ typedef struct {
     char           blinds_state[16];  /* "open" / "closed" / "opening" / "closing" / "unknown" */
 } ha_state_t;
 
+/* Energy sensor state — polled from HA sensor.* entities configured for
+ * electricity/gas/water. Hourly gas is derived from the cumulative counter
+ * via a rolling ring buffer (same pattern as homewizard.c). */
+typedef struct {
+    volatile int   connected;
+    volatile float power_w;          /* consumption, always >= 0 */
+    volatile float power_prod_w;     /* solar production, >= 0, 0 if no entity */
+    volatile float gas_m3;           /* cumulative gas (m³) */
+    volatile float gas_hour_m3;      /* trailing-hour delta (m³/h) */
+    volatile float water_m3;         /* cumulative water (m³) */
+} ha_energy_state_t;
+extern ha_energy_state_t ha_energy;
+
 /* Where poll_doorbell() writes the fetched JPEG (LVGL stdio drive 'S'). */
 #define DOORBELL_SNAP_PATH "/tmp/toonui_doorbell.jpg"
 #define DOORBELL_SNAP_LV   "S:" DOORBELL_SNAP_PATH
@@ -74,7 +87,7 @@ extern int        ha_light_count;
  * all live here. State for light/cover/switch is polled in ha_thread;
  * script/scene are stateless (a Run button). The Devices screen renders the
  * list; pin==1 devices also appear as quick-tiles on the home screen. */
-enum { HADEV_LIGHT = 0, HADEV_COVER, HADEV_SWITCH, HADEV_SCRIPT, HADEV_SCENE };
+enum { HADEV_LIGHT = 0, HADEV_COVER, HADEV_SWITCH, HADEV_SELECT, HADEV_SCRIPT, HADEV_SCENE };
 
 typedef struct {
     int          type;           /* HADEV_* */
@@ -87,6 +100,7 @@ typedef struct {
     volatile int brightness;     /* 0..255, -1 if not reported (light) */
     volatile int position;       /* 0..100 (cover) */
     char         state[16];      /* raw HA state ("open"/"closing"/…) (cover) */
+    char         options[256];   /* pipe-delimited option names (HADEV_SELECT) */
 } ha_device_t;
 
 #define HA_DEVICE_MAX 32
@@ -109,6 +123,7 @@ void ha_devices_save(void);
 void ha_device_toggle_async(int type, const char * entity_id);      /* light/switch */
 void ha_device_cover_async(const char * entity_id, const char * cmd); /* "open"/"stop"/"close" */
 void ha_device_run_async(int type, const char * entity_id);          /* script/scene */
+void ha_device_select_option_async(const char * entity_id, const char * option);  /* select */
 
 /* List editing for the settings device manager (each persists ha_devices.conf).
  * ha_device_add returns the new index, or -1 if rejected (list full / unsafe
@@ -145,7 +160,7 @@ int ha_fetch_calendar(const char * entity, const char * start_iso,
  * starts with `domain_prefix` (e.g. "cover", "light", "sensor"). Fills out[]
  * up to max entries. *count is set to the number written. Returns 0 on success,
  * -1 on failure (HA unreachable, no token, etc.). */
-#define HA_DISCOVERED_MAX 128
+#define HA_DISCOVERED_MAX 512
 typedef struct {
     char entity_id[64];
     char friendly_name[64];

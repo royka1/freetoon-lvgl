@@ -17,6 +17,7 @@
 #include "domoticz.h"
 #include "http.h"
 #include "settings.h"
+#include "mqtt_client.h"   /* mqtt_publish — domoticz/in control path */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -178,6 +179,33 @@ static int parse_devices(const char * body) {
     }
     domoticz_state.count = n;
     return 0;
+}
+
+/* Uniform MQTT read path: a "domoticz/out" message (Domoticz MQTT gateway)
+ * updates an existing device (matched by idx). The device LIST is still
+ * discovered via getdevices; domoticz/out keeps live state fresh over the
+ * broker — alongside HA's mqtt_statestream, one broker for everything. */
+void domoticz_mqtt_on_message(const char * topic, const unsigned char * payload, size_t len) {
+    if (!settings.mqtt_domoticz || !topic || !payload) return;
+    if (strcmp(topic, "domoticz/out") != 0) return;
+    char body[1024];
+    size_t n = len < sizeof body - 1 ? len : sizeof body - 1;
+    memcpy(body, payload, n); body[n] = 0;
+    const char * end = body + n;
+    char idx[16] = "", nval[12] = "", level[8] = "";
+    jstr(body, end, "idx",    idx,  sizeof idx);
+    jstr(body, end, "nvalue", nval, sizeof nval);
+    jstr(body, end, "Level",  level, sizeof level);
+    if (!idx[0]) return;
+    int id = atoi(idx);
+    for (int i = 0; i < domoticz_state.count; i++) {
+        domoticz_dev_t * d = &domoticz_state.dev[i];
+        if (d->idx != id) continue;
+        if (nval[0])                            d->on = (atoi(nval) != 0);
+        if (level[0] && d->kind != DZ_SWITCH)   d->level = atoi(level);
+        domoticz_state.last_mqtt_s = time(NULL);
+        break;
+    }
 }
 
 /* ---------------------------------------------------------------- WebSocket */
@@ -564,5 +592,24 @@ static void fire(int idx, const char * cmd, int level) {
     else free(a);
 }
 
-void domoticz_switch_async(int idx, const char * cmd) { fire(idx, cmd, 0); }
-void domoticz_set_level_async(int idx, int level)     { fire(idx, NULL, level); }
+void domoticz_switch_async(int idx, const char * cmd) {
+    if (settings.mqtt_domoticz) {   /* native Domoticz MQTT: publish to domoticz/in */
+        char p[160];
+        snprintf(p, sizeof p,
+                 "{\"command\":\"switchlight\",\"idx\":%d,\"switchcmd\":\"%s\"}", idx, cmd);
+        mqtt_publish("domoticz/in", p);
+        return;
+    }
+    fire(idx, cmd, 0);
+}
+void domoticz_set_level_async(int idx, int level) {
+    if (settings.mqtt_domoticz) {
+        char p[160];
+        snprintf(p, sizeof p,
+                 "{\"command\":\"switchlight\",\"idx\":%d,\"switchcmd\":\"Set Level\",\"level\":%d}",
+                 idx, level);
+        mqtt_publish("domoticz/in", p);
+        return;
+    }
+    fire(idx, NULL, level);
+}

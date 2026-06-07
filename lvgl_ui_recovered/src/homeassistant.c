@@ -108,23 +108,82 @@ static int extract_str(const char * json, const char * key, char * out, size_t o
     return 1;
 }
 
-/* GET /api/states/<entity_id> with Bearer auth. Shells out to curl —
- * http.c's http_fetch doesn't take headers, and adding a header parameter
- * everywhere is more churn than just inlining popen here. */
-static int ha_get_state(const char * entity_id, char * out, size_t out_max) {
-    if (!g_token[0] || !ha_id_safe(entity_id)) return -1;
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd),
-        "/usr/bin/curl -s --max-time 6 --connect-timeout 3 "
-        "-H 'Authorization: Bearer %s' "
-        "'http://%s/api/states/%s' 2>/dev/null",
-        g_token, HA_HOST, entity_id);
-    FILE * p = popen(cmd, "r");
+/* Parse a JSON "options":["A","B","C"] array into a pipe-delimited string.
+ * Example output: "Open|Peek|Close". Truncates to outsz-1. */
+static void extract_options(const char * json, char * out, size_t outsz) {
+    out[0] = 0;
+    const char * p = strstr(json, "\"options\":[");
+    if (!p) return;
+    p += 10;
+    size_t olen = 0;
+    while (*p && *p != ']' && olen < outsz - 1) {
+        p = strchr(p, '"');
+        if (!p) break;
+        p++;
+        const char * e = strchr(p, '"');
+        if (!e) break;
+        size_t n = e - p;
+        if (n > outsz - olen - 2) n = outsz - olen - 2;
+        if (olen > 0) out[olen++] = '|';
+        memcpy(out + olen, p, n);
+        olen += n;
+        p = e + 1;
+    }
+    out[olen] = 0;
+}
+
+/* ---- HA read path: a WebSocket get_states snapshot ----
+ * One ws_get_states() round-trip fills ha_snapshot with the full states array
+ * (same entity objects REST /api/states returns). ha_get_state() then extracts
+ * a single entity's object from it — no curl, no per-entity request. The
+ * persistent ha_thread keeps the snapshot fresh from live state_changed events;
+ * ha_snapshot_refresh() re-pulls the whole set at seed/periodic/after-action. */
+static char ha_snapshot[768 * 1024];
+static int  ha_snapshot_valid = 0;
+static pthread_mutex_t ha_snap_lock = PTHREAD_MUTEX_INITIALIZER;
+static void ha_snapshot_refresh(void);   /* defined after the WS helpers below */
+
+/* Copy the states[] element whose entity_id == id into out. entity_id is the
+ * first key of each element, so the '{' just before it opens that object; we
+ * then brace-match (string-aware) to its close. 0 on success, -1 if absent. */
+static int snap_extract_entity(const char * snap, const char * id,
+                               char * out, size_t out_max) {
+    char needle[96];
+    int nl = snprintf(needle, sizeof needle, "\"entity_id\":\"%s\"", id);
+    if (nl <= 0 || nl >= (int)sizeof needle) return -1;
+    const char * p = strstr(snap, needle);
     if (!p) return -1;
-    size_t n = fread(out, 1, out_max - 1, p);
-    out[n] = 0;
-    int rc = pclose(p);
-    return (rc == 0 && n > 0) ? 0 : -1;
+    const char * start = p;
+    while (start > snap && *start != '{') start--;
+    if (*start != '{') return -1;
+    int depth = 0, instr = 0, esc = 0;
+    const char * q = start;
+    for (; *q; q++) {
+        char c = *q;
+        if (instr) {
+            if (esc) esc = 0;
+            else if (c == '\\') esc = 1;
+            else if (c == '"') instr = 0;
+        } else if (c == '"') instr = 1;
+        else if (c == '{') depth++;
+        else if (c == '}') { if (--depth == 0) { q++; break; } }
+    }
+    size_t len = (size_t)(q - start);
+    if (len >= out_max) len = out_max - 1;
+    memcpy(out, start, len);
+    out[len] = 0;
+    return 0;
+}
+
+/* Extract one entity's state object from the latest WS snapshot. Drop-in for
+ * the old per-entity REST GET — same body shape, so every parser is unchanged. */
+static int ha_get_state(const char * entity_id, char * out, size_t out_max) {
+    if (!ha_id_safe(entity_id)) return -1;
+    int rc;
+    pthread_mutex_lock(&ha_snap_lock);
+    rc = ha_snapshot_valid ? snap_extract_entity(ha_snapshot, entity_id, out, out_max) : -1;
+    pthread_mutex_unlock(&ha_snap_lock);
+    return rc;
 }
 
 /* GET /api/calendars/<entity>?start=&end= with Bearer auth — fills `out` with
@@ -149,36 +208,17 @@ int ha_fetch_calendar(const char * entity, const char * start_iso,
     return (rc == 0 && n > 0) ? 0 : -1;
 }
 
-/* POST /api/services/<domain>/<service> with entity_id and optional extra JSON.
- * Returns 0 on HTTP 2xx. extra_json is appended INSIDE the body after the
- * entity_id, e.g. extra_json = ",\"brightness_pct\":50". Pass NULL for
- * plain entity-id-only calls. */
+/* Call an HA service over the WebSocket (one-shot connect+auth+call_service).
+ * extra_json = ",\"brightness_pct\":50" (leading comma) or NULL. No curl. */
+static int ws_call_service(const char * domain, const char * service,
+                           const char * entity, const char * extra_json);
 static int ha_call_service(const char * domain, const char * service,
                            const char * entity_id, const char * extra_json) {
-    if (!g_token[0] || !ha_id_safe(entity_id)) return -1;
-    char cmd[1024], out[256];
-    snprintf(cmd, sizeof(cmd),
-        "/usr/bin/curl -s --max-time 6 --connect-timeout 3 "
-        "-X POST -H 'Authorization: Bearer %s' "
-        "-H 'Content-Type: application/json' "
-        "--data '{\"entity_id\":\"%s\"%s}' "
-        "'http://%s/api/services/%s/%s' 2>/dev/null",
-        g_token, entity_id,
-        extra_json ? extra_json : "",
-        HA_HOST, domain, service);
-    FILE * p = popen(cmd, "r");
-    if (!p) {
-        notify_show("system", "ha_offline", "HA niet bereikbaar — actie niet uitgevoerd");
-        return -1;
-    }
-    size_t n = fread(out, 1, sizeof(out) - 1, p);
-    out[n] = 0;
-    int rc = pclose(p);
-    if (rc != 0 || n == 0)
-        notify_show("system", "ha_offline", "HA niet bereikbaar — actie niet uitgevoerd");
-    else
-        notify_clear("system", "ha_offline");
-    return (rc == 0) ? 0 : -1;
+    if (!ha_id_safe(entity_id)) return -1;
+    int rc = ws_call_service(domain, service, entity_id, extra_json);
+    if (rc != 0) notify_show("system", "ha_offline", "HA niet bereikbaar — actie niet uitgevoerd");
+    else         notify_clear("system", "ha_offline");
+    return rc;
 }
 
 /* Thin wrappers — keep the old signatures so existing callers don't change. */
@@ -260,7 +300,7 @@ static void poll_lights(void) {
 static void * light_action_thread(void * arg) {
     char ** p = (char **)arg;       /* [action, entity_id] */
     ha_call_light_service_only(p[0], p[1]);
-    poll_lights();
+    ha_snapshot_refresh(); poll_lights();   /* authoritative read; event backstops */
     free(p[0]); free(p[1]); free(p);
     return NULL;
 }
@@ -300,6 +340,7 @@ const char * hadev_type_str(int type) {
     switch (type) {
         case HADEV_COVER:  return "cover";
         case HADEV_SWITCH: return "switch";
+        case HADEV_SELECT: return "input_select";
         case HADEV_SCRIPT: return "script";
         case HADEV_SCENE:  return "scene";
         default:           return "light";
@@ -309,6 +350,7 @@ int hadev_type_from_str(const char * s) {
     if (!s)                    return HADEV_LIGHT;
     if (!strcmp(s, "cover"))   return HADEV_COVER;
     if (!strcmp(s, "switch"))  return HADEV_SWITCH;
+    if (!strcmp(s, "input_select")) return HADEV_SELECT;
     if (!strcmp(s, "script"))  return HADEV_SCRIPT;
     if (!strcmp(s, "scene"))   return HADEV_SCENE;
     return HADEV_LIGHT;
@@ -317,7 +359,7 @@ int hadev_type_from_str(const char * s) {
 void ha_devices_save(void) {
     FILE * f = fopen(HA_DEVICES_CONF, "w");
     if (!f) return;
-    fprintf(f, "# type|entity_id|Name|pin   (type = light|cover|switch|script|scene)\n");
+    fprintf(f, "# type|entity_id|Name|pin   (type = light|cover|switch|input_select|script|scene)\n");
     for (int i = 0; i < ha_device_count; i++) {
         ha_device_t * D = &ha_devices[i];
         fprintf(f, "%s|%s|%s|%d\n", hadev_type_str(D->type),
@@ -389,6 +431,10 @@ static void apply_device(ha_device_t * D, const char * body) {
         snprintf(D->state, sizeof D->state, "%s", st);
         int v;
         if (extract_int(body, "current_position", &v)) D->position = v;
+    } else if (D->type == HADEV_SELECT) {
+        snprintf(D->state, sizeof D->state, "%s", st[0] ? st : "?");
+        extract_options(body, D->options, sizeof D->options);
+        D->available = 1;
     } else {                          /* light / switch */
         if (!strcmp(st, "on"))        { D->available = 1; D->on = 1; }
         else if (!strcmp(st, "off"))  { D->available = 1; D->on = 0; }
@@ -398,8 +444,8 @@ static void apply_device(ha_device_t * D, const char * body) {
     }
 }
 
-/* Refresh every stateful device — one /api/states call each. Scripts/scenes
- * are stateless and skipped. */
+/* Refresh every stateful device from the WS snapshot. Scripts/scenes are
+ * stateless and skipped. */
 static void poll_devices(void) {
     char body[768];
     for (int i = 0; i < ha_device_count; i++) {
@@ -416,7 +462,7 @@ struct ha_svc_arg { char domain[12]; char service[24]; char entity[64]; };
 static void * ha_svc_thread(void * arg) {
     struct ha_svc_arg * a = (struct ha_svc_arg *)arg;
     ha_call_service(a->domain, a->service, a->entity, NULL);
-    poll_devices();
+    ha_snapshot_refresh(); poll_devices();
     free(a);
     return NULL;
 }
@@ -444,13 +490,42 @@ void ha_device_run_async(int type, const char * entity_id) {
     ha_service_async(type == HADEV_SCENE ? "scene" : "script", "turn_on", entity_id);
 }
 
+/* input_select.select_option — extra JSON carries the option value.
+ * Re-polls devices so the UI reflects the new selection quickly. */
+struct select_opt_arg { char entity[64]; char option[64]; };
+static void * select_option_thread(void * arg) {
+    struct select_opt_arg * a = (struct select_opt_arg *)arg;
+    char extra[96];
+    snprintf(extra, sizeof(extra), ",\"option\":\"%s\"", a->option);
+    ha_call_service("input_select", "select_option", a->entity, extra);
+    ha_snapshot_refresh(); poll_devices();
+    free(a);
+    return NULL;
+}
+void ha_device_select_option_async(const char * entity_id, const char * option) {
+    struct select_opt_arg * a = malloc(sizeof *a);
+    if (!a) return;
+    snprintf(a->entity, sizeof a->entity, "%s", entity_id);
+    snprintf(a->option, sizeof a->option, "%s", option);
+    pthread_t t;
+    if (pthread_create(&t, NULL, select_option_thread, a) != 0) { free(a); return; }
+    pthread_detach(t);
+}
+
 /* ---- list editing (settings device manager) ---- */
 int ha_device_add(int type, const char * entity_id, const char * name, int pin) {
     int before = ha_device_count;
     devices_add(type, entity_id, name, pin);
     if (ha_device_count == before) return -1;   /* rejected: full / unsafe id */
     ha_devices_save();
-    return ha_device_count - 1;
+    /* Poll the new device immediately so it shows state right away instead
+     * of waiting for the next WS event or reconnect. */
+    char body[768];
+    int idx = ha_device_count - 1;
+    ha_snapshot_refresh();
+    if (ha_get_state(entity_id, body, sizeof body) == 0)
+        apply_device(&ha_devices[idx], body);
+    return idx;
 }
 void ha_device_remove(int idx) {
     if (idx < 0 || idx >= ha_device_count) return;
@@ -891,6 +966,78 @@ static int ws_connect(void) {
     return fd;
 }
 
+/* ---- WebSocket request helpers (one-shot: connect+auth, do op, close) ----
+ * The persistent ha_thread WS carries live state_changed events; these
+ * short-lived connections do the request/response ops (get_states for the
+ * picker, call_service for control) so HA needs no curl and no MQTT. */
+static int ws_open_authed(void) {
+    if (!g_token[0]) return -1;
+    int fd = ws_connect();
+    if (fd < 0) return -1;
+    char m[2048];
+    if (ws_recv_msg(fd, m, sizeof m) < 0) { close(fd); return -1; }   /* auth_required */
+    char auth[320];
+    snprintf(auth, sizeof auth, "{\"type\":\"auth\",\"access_token\":\"%s\"}", g_token);
+    if (ws_send(fd, 0x1, (const unsigned char *)auth, strlen(auth)) < 0) { close(fd); return -1; }
+    if (ws_recv_msg(fd, m, sizeof m) < 0 || !strstr(m, "auth_ok")) { close(fd); return -1; }
+    return fd;
+}
+/* One-shot get_states -> raw JSON result into buf (same entity objects REST
+ * returns, wrapped in {"result":[...]}). 0 on success. */
+static int ws_get_states(char * buf, size_t bufsz) {
+    int fd = ws_open_authed();
+    if (fd < 0) return -1;
+    const char * req = "{\"id\":1,\"type\":\"get_states\"}";
+    int ok = -1;
+    if (ws_send(fd, 0x1, (const unsigned char *)req, strlen(req)) == 0) {
+        for (int t = 0; t < 5; t++) {
+            int n = ws_recv_msg(fd, buf, bufsz);
+            if (n < 0) break;
+            if (strstr(buf, "\"type\":\"result\"")) { ok = 0; break; }
+        }
+    }
+    ws_send(fd, 0x8, NULL, 0);
+    close(fd);
+    return ok;
+}
+/* One-shot call_service. extra_json is ",\"k\":v" (leading comma) or NULL. */
+static int ws_call_service(const char * domain, const char * service,
+                           const char * entity, const char * extra_json) {
+    int fd = ws_open_authed();
+    if (fd < 0) return -1;
+    char req[640];
+    if (extra_json && extra_json[0])
+        snprintf(req, sizeof req,
+            "{\"id\":1,\"type\":\"call_service\",\"domain\":\"%s\",\"service\":\"%s\","
+            "\"service_data\":{%s},\"target\":{\"entity_id\":\"%s\"}}",
+            domain, service, extra_json + 1, entity);
+    else
+        snprintf(req, sizeof req,
+            "{\"id\":1,\"type\":\"call_service\",\"domain\":\"%s\",\"service\":\"%s\","
+            "\"target\":{\"entity_id\":\"%s\"}}",
+            domain, service, entity);
+    int rc = ws_send(fd, 0x1, (const unsigned char *)req, strlen(req));
+    char m[1024]; ws_recv_msg(fd, m, sizeof m);    /* best-effort result ack */
+    ws_send(fd, 0x8, NULL, 0);
+    close(fd);
+    return rc;
+}
+/* Re-pull the whole states set into ha_snapshot (one WS round-trip). refresh_lock
+ * serializes refreshers (so the static tmp is single-writer); the brief memcpy
+ * under ha_snap_lock is all that blocks ha_get_state() readers. */
+static void ha_snapshot_refresh(void) {
+    static char tmp[768 * 1024];
+    static pthread_mutex_t refresh_lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&refresh_lock);
+    if (ws_get_states(tmp, sizeof tmp) == 0) {
+        pthread_mutex_lock(&ha_snap_lock);
+        memcpy(ha_snapshot, tmp, sizeof ha_snapshot);
+        ha_snapshot_valid = 1;
+        pthread_mutex_unlock(&ha_snap_lock);
+    }
+    pthread_mutex_unlock(&refresh_lock);
+}
+
 /* Curtain battery (one of the two child sensors) — track both, show the min. */
 static int s_bat_a = 100, s_bat_b = 100;
 static void apply_curtain_bat(const char * ns, int side) {
@@ -943,14 +1090,126 @@ static void poll_blinds(void) {
     ha_state.blinds_battery = bat_min;
 }
 
+/* ---- HA energy sensor polling -------------------------------------------
+ * Periodically curls each configured energy sensor entity and parses its
+ * numeric state. Rate-limited internally to HA_POLL_S seconds; called from
+ * the WebSocket event loop so it piggybacks on the existing connection rhythm
+ * without needing its own timer thread. */
+ha_energy_state_t ha_energy = {0};
+
+#define HA_GAS_RING_N 64
+static struct { long t; float m3; } ha_gas_ring[HA_GAS_RING_N];
+static int  ha_gas_ring_head = 0, ha_gas_ring_count = 0;
+static long ha_gas_ring_last_t = 0;
+
+static void ha_gas_hour_update(float gas_now) {
+    if (gas_now <= 0) { ha_energy.gas_hour_m3 = 0; return; }
+    long now = time(NULL);
+    if (ha_gas_ring_last_t == 0 || now - ha_gas_ring_last_t >= 55) {
+        ha_gas_ring[ha_gas_ring_head].t  = now;
+        ha_gas_ring[ha_gas_ring_head].m3 = gas_now;
+        ha_gas_ring_head = (ha_gas_ring_head + 1) % HA_GAS_RING_N;
+        if (ha_gas_ring_count < HA_GAS_RING_N) ha_gas_ring_count++;
+        ha_gas_ring_last_t = now;
+    }
+    if (ha_gas_ring_count < 2) { ha_energy.gas_hour_m3 = 0; return; }
+    long midnight = now - (now % 86400);
+    long cutoff = now - 3600;
+    if (cutoff < midnight) cutoff = midnight;  /* daily reset — don't cross midnight */
+    int oldest = (ha_gas_ring_head - ha_gas_ring_count + HA_GAS_RING_N) % HA_GAS_RING_N;
+    int ref = oldest;
+    for (int k = 0; k < ha_gas_ring_count; k++) {
+        int i = (oldest + k) % HA_GAS_RING_N;
+        if (ha_gas_ring[i].t <= cutoff) ref = i; else break;
+    }
+    float delta = gas_now - ha_gas_ring[ref].m3;
+    if (delta < 0) delta = 0;
+    ha_energy.gas_hour_m3 = delta;
+}
+
+static float ha_parse_state_float(const char * json) {
+    const char * p = strstr(json, "\"state\"");
+    if (!p) return -1;
+    p = strchr(p, ':');
+    if (!p) return -1;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p == '"') {
+        p++;
+        if (!strncmp(p, "unavailable", 11)) return -1;
+        if (!strncmp(p, "unknown", 7)) return -1;
+    }
+    return strtof(p, NULL);
+}
+
+static void poll_ha_energy(void) {
+    static time_t last_s = 0;
+    time_t now = time(NULL);
+    if (now - last_s < HA_POLL_S) return;
+    last_s = now;
+
+    int any = 0;
+    char body[1024];
+
+    if (settings.energy_elec_source == ENERGY_SRC_HA && settings.energy_elec_ha_entity[0]) {
+        if (ha_get_state(settings.energy_elec_ha_entity, body, sizeof body) == 0) {
+            float v = ha_parse_state_float(body);
+            if (v >= 0) { ha_energy.power_w = v; any = 1; }
+        }
+    }
+    if (settings.energy_elec_source == ENERGY_SRC_HA && settings.energy_elec_prod_ha_entity[0]) {
+        if (ha_get_state(settings.energy_elec_prod_ha_entity, body, sizeof body) == 0) {
+            float v = ha_parse_state_float(body);
+            if (v >= 0) { ha_energy.power_prod_w = v; any = 1; }
+        }
+    }
+    if (settings.energy_gas_source == ENERGY_SRC_HA && settings.energy_gas_ha_entity[0]) {
+        if (ha_get_state(settings.energy_gas_ha_entity, body, sizeof body) == 0) {
+            float v = ha_parse_state_float(body);
+            if (v >= 0) { ha_energy.gas_m3 = v; ha_gas_hour_update(v); any = 1; }
+        }
+    }
+    if (settings.energy_water_source == ENERGY_SRC_HA && settings.energy_water_ha_entity[0]) {
+        if (ha_get_state(settings.energy_water_ha_entity, body, sizeof body) == 0) {
+            float v = ha_parse_state_float(body);
+            if (v >= 0) { ha_energy.water_m3 = v; any = 1; }
+        }
+    }
+
+    ha_energy.connected = any ? 1 : 0;
+}
+
 /* Seed all watched state once over REST (events carry only future changes). */
 static void seed_all(void) {
+    ha_snapshot_refresh();   /* one WS get_states; the pollers extract from it */
     poll_once();        /* curtain group + battery */
     poll_blinds();      /* blinds cover + battery */
     poll_lights();
     poll_devices();     /* unified device list */
     poll_life360();
     poll_doorbell();    /* arms the trigger edge-detector */
+    poll_ha_energy();   /* seed the energy sensors from the snapshot */
+}
+
+/* Route an energy sensor's state object (a get_states element or a WS
+ * new_state) into ha_energy, so energy tracks live state_changed events
+ * instead of being polled. ent is the entity id, json its state object. */
+static void route_energy(const char * ent, const char * json) {
+    int matched = 0;
+    if (settings.energy_elec_source == ENERGY_SRC_HA && settings.energy_elec_ha_entity[0]
+        && !strcmp(ent, settings.energy_elec_ha_entity)) {
+        float v = ha_parse_state_float(json); if (v >= 0) ha_energy.power_w = v; matched = 1;
+    } else if (settings.energy_elec_source == ENERGY_SRC_HA && settings.energy_elec_prod_ha_entity[0]
+        && !strcmp(ent, settings.energy_elec_prod_ha_entity)) {
+        float v = ha_parse_state_float(json); if (v >= 0) ha_energy.power_prod_w = v; matched = 1;
+    } else if (settings.energy_gas_source == ENERGY_SRC_HA && settings.energy_gas_ha_entity[0]
+        && !strcmp(ent, settings.energy_gas_ha_entity)) {
+        float v = ha_parse_state_float(json); if (v >= 0) { ha_energy.gas_m3 = v; ha_gas_hour_update(v); } matched = 1;
+    } else if (settings.energy_water_source == ENERGY_SRC_HA && settings.energy_water_ha_entity[0]
+        && !strcmp(ent, settings.energy_water_ha_entity)) {
+        float v = ha_parse_state_float(json); if (v >= 0) ha_energy.water_m3 = v; matched = 1;
+    }
+    if (matched) ha_energy.connected = 1;
 }
 
 /* Route a state_changed event to the right apply_*. Scopes parsing to the
@@ -983,6 +1242,8 @@ static void dispatch_event(const char * msg) {
     /* Legacy ha_lights array (old Lights screen — kept until migrated). */
     for (int i = 0; i < ha_light_count; i++)
         if (!strcmp(ent, ha_lights[i].entity_id)) { apply_light(&ha_lights[i], ns); break; }
+    /* Energy sensors (P1 power/gas/water) — live, no separate poll. */
+    route_energy(ent, ns);
 }
 
 /* Doorbell live footage runs on its own thread so it never blocks the event
@@ -1005,6 +1266,8 @@ static void * ha_thread(void * arg) {
     srand((unsigned)time(NULL) ^ (unsigned)getpid());
     static char msg[64 * 1024];
     while (1) {
+        /* No token → nothing the WS can do; wait for the user to set one. */
+        if (!g_token[0]) { sleep(15); continue; }
         int fd = ws_connect();
         if (fd < 0) { ha_state.connected = 0; sleep(8); continue; }
         /* auth_required → auth → auth_ok */
@@ -1019,17 +1282,22 @@ static void * ha_thread(void * arg) {
         const char * sub = "{\"id\":1,\"type\":\"subscribe_events\",\"event_type\":\"state_changed\"}";
         if (ws_send(fd, 0x1, (unsigned char *)sub, strlen(sub)) < 0) { close(fd); continue; }
         fprintf(stderr, "[ha] WebSocket connected + subscribed to state_changed\n");
-        time_t last_ping = time(NULL);
+        time_t last_ping = time(NULL), last_reseed = time(NULL);
         while (1) {
             fd_set rs; FD_ZERO(&rs); FD_SET(fd, &rs);
             struct timeval tv = { .tv_sec = 20, .tv_usec = 0 };
             int s = select(fd + 1, &rs, NULL, NULL, &tv);
             if (s < 0) { if (errno == EINTR) continue; break; }
-            if (s == 0) { if (ws_send(fd, 0x9, NULL, 0) < 0) break; last_ping = time(NULL); continue; }
-            int n = ws_recv_msg(fd, msg, sizeof msg);
-            if (n < 0) break;
-            if (strstr(msg, "state_changed")) dispatch_event(msg);
-            if (time(NULL) - last_ping > 40) { if (ws_send(fd, 0x9, NULL, 0) < 0) break; last_ping = time(NULL); }
+            if (s > 0) {
+                int n = ws_recv_msg(fd, msg, sizeof msg);
+                if (n < 0) break;
+                if (strstr(msg, "state_changed")) dispatch_event(msg);
+            }
+            time_t now = time(NULL);
+            if (now - last_ping > 40) { if (ws_send(fd, 0x9, NULL, 0) < 0) break; last_ping = now; }
+            /* Belt-and-suspenders: a full re-pull every 60s recovers anything a
+             * missed event left stale (the snapshot drives all the pollers). */
+            if (now - last_reseed > 60) { seed_all(); last_reseed = now; }
         }
         close(fd);
         ha_state.connected = 0;
@@ -1043,7 +1311,7 @@ static void * cover_action_thread(void * arg) {
     ha_call_cover_service_only(action);
     /* Speed up the next poll so the tile reflects the new state quickly
      * instead of waiting up to HA_POLL_S seconds. */
-    poll_once();
+    ha_snapshot_refresh(); poll_once();
     free(action);
     return NULL;
 }
@@ -1074,7 +1342,7 @@ static void * brightness_action_thread(void * arg) {
         snprintf(extra, sizeof(extra), ",\"brightness_pct\":%d", a->pct);
         ha_call_service("light", "turn_on", a->entity_id, extra);
     }
-    poll_lights();
+    ha_snapshot_refresh(); poll_lights();
     free(a);
     return NULL;
 }
@@ -1096,7 +1364,7 @@ static void * cover_position_thread(void * arg) {
     char extra[32];
     snprintf(extra, sizeof(extra), ",\"position\":%d", a->pos);
     ha_call_service("cover", "set_cover_position", a->entity_id, extra);
-    poll_once();
+    ha_snapshot_refresh(); poll_once();
     free(a);
     return NULL;
 }
@@ -1117,7 +1385,7 @@ struct cover_stop_arg { char entity_id[64]; };
 static void * cover_stop_thread(void * arg) {
     struct cover_stop_arg * a = (struct cover_stop_arg *)arg;
     ha_call_service("cover", "stop_cover", a->entity_id, NULL);
-    poll_once();
+    ha_snapshot_refresh(); poll_once();
     free(a);
     return NULL;
 }
@@ -1134,61 +1402,77 @@ void ha_cover_stop_async(const char * entity_id) {
 int ha_discover_entities(const char * domain_prefix,
                           ha_discovered_t * out, int * count, int max) {
     *count = 0;
-    if (!g_token[0] || !domain_prefix || !domain_prefix[0]) return -1;
-    if (!HA_HOST[0]) return -1;
+    if (!domain_prefix || !domain_prefix[0]) return -1;
 
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-        "/usr/bin/curl -s --max-time 10 --connect-timeout 4 "
-        "-H 'Authorization: Bearer %s' "
-        "'http://%s/api/states' 2>/dev/null",
-        g_token, HA_HOST);
-    FILE * p = popen(cmd, "r");
-    if (!p) return -1;
+    /* HA-over-WebSocket: get_states returns the same entity objects as REST
+     * /api/states (wrapped in {"result":[...]}), so the parser below works
+     * unchanged — one WS round-trip, no curl, no token on a command line.
+     * 2 MB so a large install's full state isn't truncated before the tail
+     * entities (e.g. a freshly-added P1 integration) are parsed. */
+    static char body[2 * 1024 * 1024];
+    if (ws_get_states(body, sizeof body) != 0) {
+        fprintf(stderr, "[ha] ws discover: get_states failed (token set? HA reachable?)\n");
+        return -1;
+    }
+    fprintf(stderr, "[ha] ws discover: get_states %zu bytes, domain '%s'\n",
+            strlen(body), domain_prefix);
 
-    /* Read the full JSON array. HA instances can have hundreds of entities so
-     * we need a large buffer — but still cap it to keep the stack safe. */
-    static char body[131072];    /* 128 KB — enough for ~500 entities */
-    size_t n = fread(body, 1, sizeof(body) - 1, p);
-    pclose(p);
-    if (n == 0) return -1;
-    body[n] = 0;
-
-    /* Build a match needle: "entity_id":"<prefix>." — the dot guarantees we
-     * match e.g. "cover.living" but NOT "cover_long_entity". */
-    char needle[80];
-    int nlen = snprintf(needle, sizeof(needle), "\"entity_id\":\"%s.", domain_prefix);
-    size_t ndlen = strlen(needle);
+    /* … search loop as before … */
+    char id_key[32];
+    snprintf(id_key, sizeof id_key, "\"entity_id\"");
+    size_t id_key_len = strlen(id_key);
 
     int found = 0;
     const char * pos = body;
     while (found < max) {
-        const char * hit = strstr(pos, needle);
+        const char * hit = strstr(pos, id_key);
         if (!hit) break;
-        hit += ndlen;   /* skip to start of entity_id value (after the dot) */
-        pos = hit;
+        pos = hit + id_key_len;
 
-        /* Extract entity_id — it's the full "domain_prefix.entity_name" */
+        /* Skip colon + optional whitespace + opening quote */
+        const char * p2 = pos;
+        while (*p2 == ' ' || *p2 == '\t' || *p2 == '\n' || *p2 == '\r') p2++;
+        if (*p2 != ':') continue;
+        p2++;
+        while (*p2 == ' ' || *p2 == '\t' || *p2 == '\n' || *p2 == '\r') p2++;
+        if (*p2 != '"') continue;
+        p2++;
+
+        /* Check domain prefix + dot, e.g. "sensor." */
+        size_t dlen = strlen(domain_prefix);
+        if (strncmp(p2, domain_prefix, dlen) != 0 || p2[dlen] != '.') continue;
+        p2 += dlen + 1;   /* skip "domain." -> at entity name start */
+
+        /* Extract entity name (up to closing quote) */
         char ent[64];
         snprintf(ent, sizeof(ent), "%s.", domain_prefix);
         size_t elen = strlen(ent);
-        const char * ep = hit;
+        const char * ep = p2;
         while (*ep && *ep != '"' && elen < sizeof(ent) - 1)
             ent[elen++] = *ep++;
         ent[elen] = 0;
 
-        /* Walk forward to find "friendly_name":" */
+        /* Walk forward to find "friendly_name" (tolerating spaces after colon) */
         char fn[64] = "";
-        const char * fnp = strstr(pos, "\"friendly_name\":\"");
+        const char * fnp = strstr(pos, "\"friendly_name\"");
         if (fnp) {
-            fnp += 17;   /* skip "friendly_name":" */
-            size_t fni = 0;
-            while (*fnp && *fnp != '"' && fni < sizeof(fn) - 1)
-                fn[fni++] = *fnp++;
-            fn[fni] = 0;
+            fnp += 15;   /* skip "friendly_name" */
+            while (*fnp == ' ' || *fnp == '\t' || *fnp == '\n' || *fnp == '\r') fnp++;
+            if (*fnp == ':') fnp++;
+            while (*fnp == ' ' || *fnp == '\t' || *fnp == '\n' || *fnp == '\r') fnp++;
+            if (*fnp == '"') {
+                fnp++;
+                size_t fni = 0;
+                while (*fnp && *fnp != '"' && fni < sizeof(fn) - 1)
+                    fn[fni++] = *fnp++;
+                fn[fni] = 0;
+            }
         }
 
         if (ent[0] && ha_id_safe(ent)) {
+            if (found < 5)
+                fprintf(stderr, "[ha] discover:   #%d entity='%s' friendly='%s'\n",
+                        found, ent, fn[0] ? fn : "(none)");
             snprintf(out[found].entity_id, sizeof(out[found].entity_id), "%s", ent);
             if (fn[0])
                 snprintf(out[found].friendly_name, sizeof(out[found].friendly_name),
@@ -1200,6 +1484,8 @@ int ha_discover_entities(const char * domain_prefix,
         }
     }
     *count = found;
+    fprintf(stderr, "[ha] discover: domain='%s' returned %d entities (max=%d)\n",
+            domain_prefix, found, max);
     return (found > 0) ? 0 : -1;
 }
 

@@ -151,8 +151,8 @@ lv_obj_t * screen_ha_devices_create(void) {
     lv_obj_set_style_pad_column(addrow, 6, 0);
     const struct { int type; const char * txt; } adds[] = {
         { HADEV_LIGHT, "+ Light" }, { HADEV_COVER, "+ Cover" },
-        { HADEV_SWITCH, "+ Switch" }, { HADEV_SCRIPT, "+ Script" },
-        { HADEV_SCENE, "+ Scene" },
+        { HADEV_SWITCH, "+ Switch" }, { HADEV_SELECT, "+ Select" },
+        { HADEV_SCRIPT, "+ Script" }, { HADEV_SCENE, "+ Scene" },
     };
     for (size_t i = 0; i < sizeof(adds)/sizeof(adds[0]); i++)
         small_btn(addrow, adds[i].txt, 0x2e5e8a, SX(140), SY(40), on_add, adds[i].type);
@@ -175,7 +175,7 @@ lv_obj_t * screen_ha_devices_create(void) {
     lv_obj_set_style_text_align(empty_hint, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(empty_hint,
         "No devices yet. Use the buttons above to add a light, cover,\n"
-        "switch, script or scene from your Home Assistant.");
+        "switch, select, script or scene from your Home Assistant.");
     lv_obj_align(empty_hint, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(empty_hint, LV_OBJ_FLAG_HIDDEN);
 

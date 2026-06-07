@@ -27,12 +27,19 @@ typedef struct {
 typedef struct {
     volatile int   connected;
     volatile int   count;
+    volatile long  last_mqtt_s;   /* time() of last domoticz/out update, 0=never */
     domoticz_dev_t dev[DOMOTICZ_MAX_DEV];
 } domoticz_state_t;
 
 extern domoticz_state_t domoticz_state;
 
 int  domoticz_start(void);
+
+/* Feed a Domoticz "domoticz/out" MQTT message (JSON with idx/nvalue/Level)
+ * into the device model — the uniform MQTT read path alongside HA. No-op
+ * unless settings.mqtt_domoticz and the topic is "domoticz/out". */
+#include <stddef.h>
+void domoticz_mqtt_on_message(const char * topic, const unsigned char * payload, size_t len);
 
 /* Synchronous connection test for the Settings screen. Runs the same auth
  * ladder as the live client (session cookie → re-login → HTTP Basic). Returns

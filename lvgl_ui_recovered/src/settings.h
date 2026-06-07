@@ -89,18 +89,20 @@ typedef struct {
     char mqtt_pass[64];
     char mqtt_topics[8][96];
     int  mqtt_topic_count;
+    /* MQTT as the PRIMARY device-read path (curl stays a fallback). When on,
+     * we subscribe to the backend's MQTT topics and feed the live device model
+     * from there; the per-entity curl polls are skipped while MQTT is fresh. */
+    int  mqtt_ha_reads;          /* 0/1 — subscribe to HA mqtt_statestream */
+    char mqtt_ha_base[64];       /* statestream base topic, default "homeassistant" */
+    int  mqtt_domoticz;          /* 0/1 — subscribe domoticz/out (Domoticz MQTT gateway) */
 
     /* Integration toggles — runtime on/off for optional add-ons.
      * Default is 0 ("basic" install). On first boot (no toonui.cfg key),
      * settings_load() auto-enables a flag if its config file is present:
-     *   enable_p1_elec   ← /mnt/data/p1bridge.conf exists
-     *   enable_p1_water  ← /mnt/data/p1bridge.conf has a .115 line
      *   enable_vent      ← /mnt/data/vent.conf exists (non-empty)
      *   enable_ha        ← /mnt/data/ha.cfg exists (non-empty)
      * After first save the cfg keys are authoritative — user flips in
      * Settings → Integrations and toonui restarts to apply. */
-    int enable_p1_elec;
-    int enable_p1_water;
     int enable_vent;
     int enable_ha;
 
@@ -120,13 +122,18 @@ typedef struct {
      * reference_toon_zwave_api memory for the HTTP API. */
     int enable_zwave;
 
-    /* Energy data source for the Energy tile.
-     *   0 = meteradapter — the Toon's own built-in smart-meter reading via
-     *       happ_pwrusage (the official/stock path). Default.
-     *   1 = p1 — HomeWizard P1 over the LAN (the homewizard.c poller).
-     * Per-device: a Toon with a working meteradapter uses 0; a setup that
-     * reads the meter via a HomeWizard P1 instead picks 1. */
-    int energy_source;
+    /* Energy/water data source per resource. Each is an ENERGY_SRC_*
+     * value: 0=Off, 1=HomeAssistant, 2=HomeWizard P1, 3=Z-Wave meteradapter
+     * (ZWAVE only valid for elec+gas). Independent — you can mix sources
+     * (e.g. elec from P1, gas from HA, water off).
+     * Migrated from the old single `energy_source` key on first load. */
+    int  energy_elec_source;
+    int  energy_gas_source;
+    int  energy_water_source;
+    char energy_elec_ha_entity[64];       /* HA sensor for consumption (W) */
+    char energy_elec_prod_ha_entity[64];  /* HA sensor for solar production (W), optional */
+    char energy_gas_ha_entity[64];        /* HA sensor for cumulative gas (m³) */
+    char energy_water_ha_entity[64];      /* HA sensor for cumulative water (m³) */
 
     /* Boot-picker — when 1, the launcher-spawned `toonui --bootpick`
      * shows a 10 s "freetoon vs stock qt-gui" picker before dispatching.
@@ -297,6 +304,12 @@ typedef struct {
 #define FORECAST_AUTO   0
 #define FORECAST_HOURLY 1
 #define FORECAST_DAILY  2
+
+/* Per-resource energy/water source selectors. */
+#define ENERGY_SRC_OFF    0
+#define ENERGY_SRC_HA     1
+#define ENERGY_SRC_HW_P1  2
+#define ENERGY_SRC_ZWAVE  3
 
 /* Display-side adjusted indoor temperature: raw + settings.temp_offset_centi/100 */
 float display_indoor_temp(float raw);

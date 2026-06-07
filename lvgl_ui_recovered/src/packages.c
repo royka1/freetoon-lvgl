@@ -13,6 +13,7 @@
 #include "packages.h"
 #include "display.h"
 #include "mqtt_client.h"
+#include "domoticz.h"        /* domoticz_mqtt_on_message */
 #include "lvgl/lvgl.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -270,8 +271,11 @@ static void on_mqtt_msg(const char * topic, const unsigned char * payload,
                          size_t len, void * arg) {
     (void)arg;
     if (!topic || !payload || !len) return;
-    if (!strcmp(topic, "home/packages/banner")) on_banner_event(payload, len);
-    else if (!strcmp(topic, "home/packages/state")) on_state_map(payload, len);
+    if (!strcmp(topic, "home/packages/banner")) { on_banner_event(payload, len); return; }
+    if (!strcmp(topic, "home/packages/state"))  { on_state_map(payload, len);    return; }
+    /* Device read path: Domoticz native MQTT ("domoticz/out"). HA no longer
+     * reads over MQTT — it uses the WebSocket (see homeassistant.c). */
+    domoticz_mqtt_on_message(topic, payload, len);
 }
 
 void packages_start(void) {

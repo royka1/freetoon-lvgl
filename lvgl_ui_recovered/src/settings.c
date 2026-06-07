@@ -65,10 +65,11 @@ settings_t settings = {
     .mqtt_pass           = "",
     .mqtt_topics         = {"home/packages/banner", "home/packages/state"},
     .mqtt_topic_count    = 2,
+    .mqtt_ha_reads       = 0,
+    .mqtt_ha_base        = "homeassistant",
+    .mqtt_domoticz       = 0,
     /* Integrations default OFF — see settings.h for the on-first-boot
      * auto-enable rule based on existing config files. */
-    .enable_p1_elec      = 0,
-    .enable_p1_water     = 0,
     .enable_vent         = 0,
     .enable_ha           = 0,
     .enable_domoticz     = 0,
@@ -116,7 +117,13 @@ settings_t settings = {
     .hide_offline_tiles  = 0,
     .update_check_enabled = 1,
     .update_channel       = 1,   /* beta/dev by default */
-    .energy_source       = 0,   /* meteradapter (official) by default */
+    .energy_elec_source       = ENERGY_SRC_ZWAVE, /* meteradapter (official) by default */
+    .energy_gas_source        = ENERGY_SRC_ZWAVE,
+    .energy_water_source      = ENERGY_SRC_OFF,
+    .energy_elec_ha_entity    = "",
+    .energy_elec_prod_ha_entity = "",
+    .energy_gas_ha_entity     = "",
+    .energy_water_ha_entity   = "",
 
     /* Toon 1 panel mounting orientation — TSC2007 reports Y flipped vs the
      * framebuffer on EVERY Toon 1 (not a per-device tweak). Default this
@@ -157,7 +164,8 @@ void settings_load(void) {
      * 0 after the parse loop is filled in by the migration / autodetect
      * step below — keeps existing installs from suddenly losing pollers
      * after the upgrade. */
-    int seen_p1_elec = 0, seen_p1_water = 0, seen_vent = 0, seen_ha = 0;
+    int seen_vent = 0, seen_ha = 0;
+    int seen_energy_source_old = 0;  /* 1-based: 1→old=0(meter), 2→old=1(P1) */
     int cfg_existed = 0;
 
     FILE * f = fopen(CFG_PATH, "r");
@@ -257,8 +265,12 @@ void settings_load(void) {
                 snprintf(settings.mqtt_topics[idx],
                          sizeof settings.mqtt_topics[0], "%s", v);
         }
-        else if (strcmp(k, "enable_p1_elec")  == 0) { settings.enable_p1_elec  = iv; seen_p1_elec  = 1; }
-        else if (strcmp(k, "enable_p1_water") == 0) { settings.enable_p1_water = iv; seen_p1_water = 1; }
+        else if (strcmp(k, "mqtt_ha_reads")     == 0) settings.mqtt_ha_reads = iv;
+        else if (strcmp(k, "mqtt_ha_base")      == 0)
+            snprintf(settings.mqtt_ha_base, sizeof settings.mqtt_ha_base, "%s", v);
+        else if (strcmp(k, "mqtt_domoticz")     == 0) settings.mqtt_domoticz = iv;
+        else if (strcmp(k, "enable_p1_elec")  == 0) { /* deprecated — now derived from source */ }
+        else if (strcmp(k, "enable_p1_water") == 0) { /* deprecated — now derived from source */ }
         else if (strcmp(k, "enable_vent")     == 0) { settings.enable_vent     = iv; seen_vent     = 1; }
         else if (strcmp(k, "enable_ha")       == 0) { settings.enable_ha       = iv; seen_ha       = 1; }
         else if (strcmp(k, "enable_domoticz") == 0) settings.enable_domoticz = iv;
@@ -323,7 +335,14 @@ void settings_load(void) {
         else if (strcmp(k, "domoticz_pass")   == 0)
             snprintf(settings.domoticz_pass, sizeof settings.domoticz_pass, "%s", v);
         else if (strcmp(k, "enable_zwave")    == 0) settings.enable_zwave = iv;
-        else if (strcmp(k, "energy_source")   == 0) settings.energy_source = iv;
+        else if (strcmp(k, "energy_source")     == 0) seen_energy_source_old = iv + 1;  /* 0→1, 1→2 (sticky) */
+        else if (strcmp(k, "energy_elec_source")  == 0) settings.energy_elec_source  = (iv < 0 || iv > 3) ? ENERGY_SRC_ZWAVE : iv;
+        else if (strcmp(k, "energy_gas_source")   == 0) settings.energy_gas_source   = (iv < 0 || iv > 3) ? ENERGY_SRC_ZWAVE : iv;
+        else if (strcmp(k, "energy_water_source") == 0) settings.energy_water_source = (iv < 0 || iv > 2) ? ENERGY_SRC_OFF   : iv;  /* water has no ZWAVE */
+        else if (strcmp(k, "energy_elec_ha_entity")       == 0) snprintf(settings.energy_elec_ha_entity, sizeof settings.energy_elec_ha_entity, "%s", v);
+        else if (strcmp(k, "energy_elec_prod_ha_entity")  == 0) snprintf(settings.energy_elec_prod_ha_entity, sizeof settings.energy_elec_prod_ha_entity, "%s", v);
+        else if (strcmp(k, "energy_gas_ha_entity")        == 0) snprintf(settings.energy_gas_ha_entity, sizeof settings.energy_gas_ha_entity, "%s", v);
+        else if (strcmp(k, "energy_water_ha_entity")      == 0) snprintf(settings.energy_water_ha_entity, sizeof settings.energy_water_ha_entity, "%s", v);
         else if (strcmp(k, "boot_picker_enabled") == 0) settings.boot_picker_enabled = iv;
         else if (strcmp(k, "hide_offline_tiles")  == 0) settings.hide_offline_tiles = iv;
         else if (strcmp(k, "update_check_enabled") == 0) settings.update_check_enabled = iv;
@@ -370,14 +389,18 @@ autodetect:
      *  so this branch only runs once per install. */
     {
     int legacy = cfg_existed;
-    if (!seen_p1_elec)
-        settings.enable_p1_elec  = legacy ? 1 : file_has_content("/mnt/data/p1bridge.conf");
-    if (!seen_p1_water)
-        settings.enable_p1_water = legacy ? 1 : (settings.p1_water_host[0] != 0);
     if (!seen_vent)
         settings.enable_vent     = legacy ? 1 : file_has_content("/mnt/data/vent.conf");
     if (!seen_ha)
         settings.enable_ha       = legacy ? 1 : file_has_content("/mnt/data/ha.cfg");
+
+    /* Migrate old `energy_source` to the new per-resource fields. */
+    if (seen_energy_source_old) {
+        int old = seen_energy_source_old - 1;  /* 0=meteradapter, 1=HomeWizard P1 */
+        settings.energy_elec_source  = old ? ENERGY_SRC_HW_P1 : ENERGY_SRC_ZWAVE;
+        settings.energy_gas_source   = old ? ENERGY_SRC_HW_P1 : ENERGY_SRC_ZWAVE;
+        /* Water had no old energy_source — it was gated by enable_p1_water. */
+    }
     }
 
     /* Migration: if mqtt_pass is still empty, try to read /mnt/data/mqtt.cfg
@@ -578,8 +601,9 @@ void settings_save(void) {
     fprintf(f, "mqtt_topic_count=%d\n",    settings.mqtt_topic_count);
     for (int i = 0; i < settings.mqtt_topic_count && i < 8; i++)
         fprintf(f, "mqtt_topic_%d=%s\n", i, settings.mqtt_topics[i]);
-    fprintf(f, "enable_p1_elec=%d\n",  settings.enable_p1_elec);
-    fprintf(f, "enable_p1_water=%d\n", settings.enable_p1_water);
+    fprintf(f, "mqtt_ha_reads=%d\n",   settings.mqtt_ha_reads);
+    fprintf(f, "mqtt_ha_base=%s\n",    settings.mqtt_ha_base);
+    fprintf(f, "mqtt_domoticz=%d\n",   settings.mqtt_domoticz);
     fprintf(f, "enable_vent=%d\n",     settings.enable_vent);
     fprintf(f, "enable_ha=%d\n",       settings.enable_ha);
     fprintf(f, "enable_domoticz=%d\n", settings.enable_domoticz);
@@ -639,7 +663,17 @@ void settings_save(void) {
     fprintf(f, "domoticz_user=%s\n",   settings.domoticz_user);
     fprintf(f, "domoticz_pass=%s\n",   settings.domoticz_pass);
     fprintf(f, "enable_zwave=%d\n",    settings.enable_zwave);
-    fprintf(f, "energy_source=%d\n",   settings.energy_source);
+    fprintf(f, "energy_elec_source=%d\n",   settings.energy_elec_source);
+    fprintf(f, "energy_gas_source=%d\n",    settings.energy_gas_source);
+    fprintf(f, "energy_water_source=%d\n",  settings.energy_water_source);
+    if (settings.energy_elec_ha_entity[0])
+        fprintf(f, "energy_elec_ha_entity=%s\n", settings.energy_elec_ha_entity);
+    if (settings.energy_elec_prod_ha_entity[0])
+        fprintf(f, "energy_elec_prod_ha_entity=%s\n", settings.energy_elec_prod_ha_entity);
+    if (settings.energy_gas_ha_entity[0])
+        fprintf(f, "energy_gas_ha_entity=%s\n", settings.energy_gas_ha_entity);
+    if (settings.energy_water_ha_entity[0])
+        fprintf(f, "energy_water_ha_entity=%s\n", settings.energy_water_ha_entity);
     fprintf(f, "boot_picker_enabled=%d\n", settings.boot_picker_enabled);
     fprintf(f, "hide_offline_tiles=%d\n",  settings.hide_offline_tiles);
     fprintf(f, "update_check_enabled=%d\n", settings.update_check_enabled);

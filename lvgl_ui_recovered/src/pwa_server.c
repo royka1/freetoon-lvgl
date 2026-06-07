@@ -1170,7 +1170,7 @@ static int handle_settings_get(int fd) {
         "\"weather_location\":\"%s\",\"weather_location_id\":%d,"
         "\"forecast_mode\":%d,\"ot_bridge_mode\":\"%s\",\"otgw_host\":\"%s\","
         "\"mqtt_enabled\":%d,\"mqtt_host\":\"%s\",\"mqtt_port\":%d,\"mqtt_user\":\"%s\","
-        "\"enable_p1_elec\":%d,\"enable_p1_water\":%d,\"enable_vent\":%d,"
+        "\"enable_vent\":%d,"
         "\"enable_ha\":%d,\"enable_zwave\":%d,\"vnc_enabled\":%d,"
         "\"enable_domoticz\":%d,\"domoticz_host\":\"%s\",\"domoticz_user\":\"%s\","
         "\"hide_offline_tiles\":%d,\"boot_picker_enabled\":%d,"
@@ -1181,7 +1181,9 @@ static int handle_settings_get(int fd) {
         "\"doorbell_entity\":\"%s\",\"doorbell_camera\":\"%s\",\"doorbell_seconds\":%d,"
         "\"doorbell_stream_url\":\"%s\","
         "\"p1_elec_host\":\"%s\",\"p1_water_host\":\"%s\",\"vent_host\":\"%s\",\"opnsense_host\":\"%s\","
-        "\"energy_source\":%d,\"auto_update_enabled\":%d,\"auto_update_hour\":%d,"
+        "\"energy_elec_source\":%d,\"energy_gas_source\":%d,\"energy_water_source\":%d,"
+        "\"energy_elec_ha_entity\":\"%s\",\"energy_gas_ha_entity\":\"%s\",\"energy_water_ha_entity\":\"%s\","
+        "\"auto_update_enabled\":%d,\"auto_update_hour\":%d,"
         "\"news_enabled\":%d,\"news_rss_url\":\"%s\",\"news_scroll_speed\":%d,"
         "\"calendar_enabled\":%d,\"calendar_ha_entity\":\"%s\",\"calendar_ics_url\":\"%s\","
         "\"tile_rotate_enabled\":%d,\"tile_rotate_seconds\":%d,\"tile_rotate_members\":\"%s\","
@@ -1197,7 +1199,7 @@ static int handle_settings_get(int fd) {
         settings.weather_location, settings.weather_location_id,
         settings.forecast_mode, settings.ot_bridge_mode, settings.otgw_host,
         settings.mqtt_enabled, settings.mqtt_host, settings.mqtt_port, settings.mqtt_user,
-        settings.enable_p1_elec, settings.enable_p1_water, settings.enable_vent,
+        settings.enable_vent,
         settings.enable_ha, settings.enable_zwave, settings.vnc_enabled,
         settings.enable_domoticz, settings.domoticz_host, settings.domoticz_user,
         settings.hide_offline_tiles, settings.boot_picker_enabled,
@@ -1208,7 +1210,9 @@ static int handle_settings_get(int fd) {
         settings.doorbell_entity, settings.doorbell_camera, settings.doorbell_seconds,
         settings.doorbell_stream_url,
         settings.p1_elec_host, settings.p1_water_host, settings.vent_host, settings.opnsense_host,
-        settings.energy_source, settings.auto_update_enabled, settings.auto_update_hour,
+        settings.energy_elec_source, settings.energy_gas_source, settings.energy_water_source,
+        settings.energy_elec_ha_entity, settings.energy_gas_ha_entity, settings.energy_water_ha_entity,
+        settings.auto_update_enabled, settings.auto_update_hour,
         settings.news_enabled, settings.news_rss_url, settings.news_scroll_speed,
         settings.calendar_enabled, settings.calendar_ha_entity, settings.calendar_ics_url,
         settings.tile_rotate_enabled, settings.tile_rotate_seconds, settings.tile_rotate_members,
@@ -1249,8 +1253,8 @@ static int handle_settings_post(int fd, const char * body) {
         snprintf(settings.waste_city, sizeof settings.waste_city, "%s", sv);
     if (extract_int(body, "forecast_mode", &iv))      settings.forecast_mode = iv;
     if (extract_int(body, "mqtt_port", &iv))          settings.mqtt_port = iv;
-    if (extract_int(body, "enable_p1_elec", &iv))     settings.enable_p1_elec = !!iv;
-    if (extract_int(body, "enable_p1_water", &iv))    settings.enable_p1_water = !!iv;
+    if (extract_int(body, "enable_p1_elec", &iv))     { /* deprecated — ignore, P1 is now derived from source */ }
+    if (extract_int(body, "enable_p1_water", &iv))    { /* deprecated */ }
     if (extract_int(body, "enable_vent", &iv))        settings.enable_vent = !!iv;
     if (extract_int(body, "enable_ha", &iv))          settings.enable_ha = !!iv;
     if (extract_int(body, "enable_domoticz", &iv))    settings.enable_domoticz = !!iv;
@@ -1343,7 +1347,12 @@ static int handle_settings_post(int fd, const char * body) {
         snprintf(settings.vent_host, sizeof settings.vent_host, "%s", sv);
     if (extract_str(body, "opnsense_host", sv, sizeof sv))
         snprintf(settings.opnsense_host, sizeof settings.opnsense_host, "%s", sv);
-    if (extract_int(body, "energy_source", &iv))      settings.energy_source = !!iv;
+    if (extract_int(body, "energy_elec_source", &iv)) settings.energy_elec_source = (iv < 0 || iv > 3) ? ENERGY_SRC_ZWAVE : iv;
+    if (extract_int(body, "energy_gas_source", &iv))  settings.energy_gas_source  = (iv < 0 || iv > 3) ? ENERGY_SRC_ZWAVE : iv;
+    if (extract_int(body, "energy_water_source", &iv))settings.energy_water_source = (iv < 0 || iv > 2) ? ENERGY_SRC_OFF   : iv;
+    if (extract_str(body, "energy_elec_ha_entity", sv, sizeof sv)) snprintf(settings.energy_elec_ha_entity, sizeof settings.energy_elec_ha_entity, "%s", sv);
+    if (extract_str(body, "energy_gas_ha_entity", sv, sizeof sv))  snprintf(settings.energy_gas_ha_entity, sizeof settings.energy_gas_ha_entity, "%s", sv);
+    if (extract_str(body, "energy_water_ha_entity", sv, sizeof sv))snprintf(settings.energy_water_ha_entity, sizeof settings.energy_water_ha_entity, "%s", sv);
     /* Auto-update */
     if (extract_int(body, "auto_update_enabled", &iv))settings.auto_update_enabled = !!iv;
     if (extract_int(body, "auto_update_hour", &iv))   settings.auto_update_hour = (iv < 0 || iv > 23) ? 2 : iv;
@@ -1414,9 +1423,13 @@ static const char SETTINGS_HTML[] =
 "['mqtt_enabled','MQTT enabled','b'],"
 "['mqtt_host','Broker host','t'],['mqtt_port','Port','n'],['mqtt_user','User','t'],"
 "['Integrations','h'],"
-"['enable_p1_elec','P1 electricity','b'],['p1_elec_host','P1 elec host (ip)','t'],"
-"['enable_p1_water','P1 water','b'],['p1_water_host','P1 water host (ip)','t'],"
-"['energy_source','Energy src (0 meteradapter / 1 P1)','n'],"
+"['p1_elec_host','P1 elec host (ip)','t'],['p1_water_host','P1 water host (ip)','t'],"
+"['energy_elec_source','Elec source (0 Off/1 HA/2 HW P1/3 Z-Wave)','n'],"
+"['energy_gas_source','Gas source (0 Off/1 HA/2 HW P1/3 Z-Wave)','n'],"
+"['energy_water_source','Water source (0 Off/1 HA/2 HW P1)','n'],"
+"['energy_elec_ha_entity','HA elec consumption sensor','t'],"
+"['energy_gas_ha_entity','HA gas sensor','t'],"
+"['energy_water_ha_entity','HA water sensor','t'],"
 "['enable_vent','Ventilation','b'],['vent_host','Itho vent host (ip)','t'],"
 "['enable_zwave','Z-Wave control','b'],"
 "['opnsense_host','Router host (healthcheck, ip)','t'],"
