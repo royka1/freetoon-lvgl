@@ -4,15 +4,19 @@
  * doesn't block the accept loop or other clients. Handlers are stateless
  * apart from reads of toon_state / ha_state.
  *
+ * The only frontend served here is the WASM slave UI (the full LVGL UI
+ * compiled to WebAssembly) under /ui/. Bare "/" 302-redirects to /ui/. There
+ * is deliberately no separate HTML settings/about page or simple JS app — the
+ * WASM UI is the single interface, plus the /api/ endpoints it drives.
+ *
  * Routes:
- *   GET  /                  →  index.html
- *   GET  /manifest.json     →  PWA manifest
- *   GET  /sw.js             →  service-worker stub (install + offline shell)
- *   GET  /icon-192.png      →  PWA icon
+ *   GET  /                  →  302 /ui/   (WASM slave UI)
+ *   GET  /ui/…              →  static WASM bundle (index.html/js/wasm)
  *   GET  /api/state         →  one-shot toon_state JSON (legacy / curl)
  *   GET  /api/state/stream  →  SSE: emits on state change + 10s heartbeat
  *   POST /api/setpoint      →  body {"value": "18.50"} → roomSetpoint write
- *   POST /api/program       →  body {"state": 0..3} (Comfort/Home/Sleep/Away)
+ *   POST /api/program       →  body {"state": -1 (Manual) | 0..3
+ *                                     (Comfort/Home/Sleep/Away)}
  *   POST /api/curtain       →  body {"action": "open|close|stop"} via HA
  *
  * All static files live under PWA_ROOT (/mnt/data/pwa/). */
@@ -89,6 +93,17 @@ static int send_status(int fd, int code, const char * status, const char * body)
 /* Serve a static file from PWA_ROOT. Guards against `..` path-escape. */
 static int serve_static(int fd, const char * path) {
     if (strstr(path, "..")) return send_status(fd, 400, "Bad Request", "..");
+    /* :10081 serves ONLY the WASM slave UI, which lives under /ui/. Bare root
+     * (and the old simple-app /index.html) 302-redirect there so opening the
+     * Toon's IP drops straight into the WASM UI — there is no other frontend. */
+    if (!strcmp(path, "/") || !strcmp(path, "/index.html")) {
+        char hdr[160];
+        int n = snprintf(hdr, sizeof hdr,
+            "HTTP/1.1 302 Found\r\nLocation: /ui/\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n");
+        sock_send_all(fd, hdr, n);
+        return 0;
+    }
     char full[512];
     size_t plen = strlen(path);
     /* "/" and any directory request ("/ui/", "/foo/") resolve to index.html
@@ -1544,51 +1559,6 @@ static int handle_update_post(int fd) {
     return send_status(fd, 200, "OK", "{\"ok\":1}");
 }
 
-/* About / license — the web mirror of the LVGL logo→About modal. */
-#ifndef BUILD_VERSION
-#define BUILD_VERSION "dev"
-#endif
-static int handle_about_page(int fd) {
-    char html[2048];
-    int n = snprintf(html, sizeof html,
-        "<!doctype html><html><head><meta charset=utf-8>"
-        "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<title>freetoon - about</title><style>"
-        "body{font-family:system-ui,sans-serif;background:#0e1a2a;color:#dfe9f3;margin:0;padding:18px;line-height:1.5}"
-        "h1{font-size:22px;margin:0 0 2px}.v{color:#88aabb;font-size:14px;margin-bottom:14px}"
-        "h2{font-size:15px;color:#88aabb;border-bottom:1px solid #24385c;padding-bottom:4px;margin:18px 0 6px}"
-        "code{background:#16243a;padding:2px 6px;border-radius:6px}a{color:#6fb3ff}"
-        "ul{padding-left:20px}li{margin:3px 0}.mark{display:inline-block;background:#2e6e9e;color:#fff;"
-        "border-radius:10px;padding:6px 10px;font-weight:bold;margin-right:8px}"
-        "</style></head><body>"
-        "<span class=mark>ft</span><h1>freetoon</h1>"
-        "<div class=v>%s &nbsp;-&nbsp; beta &nbsp;-&nbsp; alternative UI by Ierlandfan &nbsp;-&nbsp; MIT License</div>"
-        "<p>An independent LVGL UI for the Eneco Toon. Released under the "
-        "<a href=https://github.com/Ierlandfan/freetoon-lvgl/blob/main/LICENSE>MIT License</a>.</p>"
-        "<h2>Thanks</h2><p>To <b>Quby / Eneco</b> for the underlying Toon platform and the "
-        "BoxTalk / Quby protocol structure this UI builds on. The stock Toon binaries and "
-        "keteladapter firmware remain &copy; Eneco / Quby and are not redistributed or "
-        "modified by this project.</p>"
-        "<h2>Built with</h2><ul>"
-        "<li>LVGL - embedded UI library (MIT) &copy; LVGL Kft</li>"
-        "<li>QR-Code-generator (MIT) &copy; Project Nayuki</li>"
-        "<li>LodePNG (zlib) &copy; Lode Vandevenne</li>"
-        "<li>TJpgDec - JPEG decoder (BSD-3) &copy; ChaN</li>"
-        "<li>OTGW HTTP firmware &copy; Robert van den Breemen</li>"
-        "<li>Itho-WiFi REST add-on &copy; Arjen Hiemstra</li>"
-        "<li>HomeWizard P1, Buienradar, NOS feeds - public APIs</li>"
-        "</ul>"
-        "<p><a href=/settings>&larr; Settings</a> &nbsp;&middot;&nbsp; "
-        "<a href=https://github.com/Ierlandfan/freetoon-lvgl>Project on GitHub</a></p>"
-        "</body></html>",
-        BUILD_VERSION);
-    char hdr[160];
-    int hn = snprintf(hdr, sizeof hdr,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
-        "Content-Length: %d\r\n\r\n", n);
-    if (sock_send_all(fd, hdr, hn) < 0) return -1;
-    return sock_send_all(fd, html, n);
-}
 
 /* ============================================================
  *  PWA login: cookie-session auth
@@ -1723,9 +1693,6 @@ static int path_is_public(const char * path) {
     if (!strcmp(path, "/login"))         return 1;
     if (!strcmp(path, "/set-password"))  return 1;
     if (!strcmp(path, "/logout"))        return 1;
-    if (!strcmp(path, "/manifest.json")) return 1;
-    if (!strcmp(path, "/sw.js"))         return 1;
-    if (!strcmp(path, "/icon-192.png"))  return 1;
     return 0;
 }
 
@@ -1935,8 +1902,8 @@ static int dispatch(int fd, char * req) {
         if (!strcmp(path, "/api/schedule"))      return handle_schedule_get(fd);
         if (!strcmp(path, "/api/settings"))      return handle_settings_get(fd);
         if (!strcmp(path, "/api/update/status")) return handle_update_status(fd);
-        if (!strcmp(path, "/about") || !strcmp(path, "/about.html"))
-            return handle_about_page(fd);
+        /* The lightweight built-in settings page (no WASM build needed). Lives
+         * alongside the WASM slave UI at /ui/ — bare "/" still redirects there. */
         if (!strcmp(path, "/settings") || !strcmp(path, "/settings.html"))
             return handle_settings_page(fd);
         return serve_static(fd, path);

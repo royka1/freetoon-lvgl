@@ -91,7 +91,7 @@ step 4 "Helpers + assets installeren"
 # re-run of the installer must update them rather than keep a stale copy.
 # integrations-install.sh is what the Marketplace screen runs (system()) to
 # install an integration — without it, "Install" silently does nothing.
-for s in ui_launcher.sh companion_gate.sh ot_mode_switch.sh toonvnc.sh integrations-install.sh; do
+for s in ui_launcher.sh companion_gate.sh ot_mode_switch.sh toonvnc.sh integrations-install.sh toon_wasm_host.sh; do
     if dl "$s" "$TMP/$s" && [ -s "$TMP/$s" ]; then
         cp "$TMP/$s" "$DEST/$s" && chmod +x "$DEST/$s"
     fi
@@ -134,24 +134,16 @@ if [ ! -x /usr/bin/x11vnc ] && ! which x11vnc >/dev/null 2>&1 \
     fi
 fi
 
-# 2d) PWA static assets — the phone web UI + settings page that pwa_server
-# serves on :10081. The API/settings endpoints work without these, but the
-# installable app at "/" 404s until index.html/app.js/etc. exist under
-# /mnt/data/pwa. Shipped as a tarball; always refresh so app updates land.
-if dl pwa.tgz "$TMP/pwa.tgz" \
-   && [ "$(wc -c < "$TMP/pwa.tgz" 2>/dev/null || echo 0)" -gt 1000 ]; then
-    mkdir -p "$DEST/pwa"
-    if tar xzf "$TMP/pwa.tgz" -C "$DEST/pwa" 2>/dev/null; then
-        say "installed PWA assets -> $DEST/pwa"
-    fi
-fi
+# 2d) (removed) — there is no separate simple-app / settings HTML page on
+# :10081 anymore. The sole frontend is the WASM slave UI installed under
+# /mnt/data/pwa/ui/ in step 2d2; pwa_server 302-redirects "/" to "/ui/".
 
-# 2d2) freetoon-WASM bundle — the full LVGL UI compiled to WebAssembly. When
-# present in the release, pwa_server serves it at http://<toon>:10081/ui/ as
-# a same-origin slave of the master Toon's /api/state/stream. Any browser on
-# the LAN (phone / tablet / laptop) opens the URL → full UI, no install.
-# Optional asset: a release without these three files leaves /ui/ a 404,
-# which is fine — the rest of the UI is unaffected.
+# 2d2) freetoon-WASM bundle — the full LVGL UI compiled to WebAssembly, and the
+# ONLY frontend pwa_server serves on :10081. Installed at /mnt/data/pwa/ui/ and
+# reached at http://<toon>:10081/ (302→/ui/) as a same-origin slave of the
+# master Toon's /api/state/stream. Any browser on the LAN (phone / tablet /
+# laptop) opens the URL → full UI, no install. If a release ships without these
+# three files, "/" → /ui/ → 404 until they are present.
 mkdir -p "$DEST/pwa/ui"
 for f in index.html index.wasm index.js; do
     if dl "$f" "$TMP/wasm_$f" 2>/dev/null \
@@ -160,6 +152,22 @@ for f in index.html index.wasm index.js; do
         say "installed WASM bundle file -> $DEST/pwa/ui/$f ($(wc -c < $DEST/pwa/ui/$f) B)"
     fi
 done
+
+# 2d3) Retire the old simple-app / settings-page assets that earlier releases
+# dropped at the pwa ROOT. pwa_server now serves ONLY the WASM UI under /ui/
+# (bare "/" 302-redirects there), so these are dead files — remove them so an
+# upgraded device doesn't keep serving stale JS or waste flash. ONLY do this
+# once the WASM bundle is actually present under /ui/, so we never strip the
+# root without a working replacement in place.
+if [ -s "$DEST/pwa/ui/index.wasm" ]; then
+    for stale in app.js sw.js manifest.json icon-192.png \
+                 index.html index.js index.wasm \
+                 index.html.bak index.html.staticbak \
+                 index.js.bak index.wasm.bak; do
+        [ -e "$DEST/pwa/$stale" ] && rm -f "$DEST/pwa/$stale" \
+            && say "removed obsolete pwa asset -> $DEST/pwa/$stale"
+    done
+fi
 
 # 2e) Open the PWA (10081) + VNC (5900) ports in the stock Toon firewall. The
 # HCB-INPUT chain in /etc/default/iptables.conf accepts only 22/80 and drops
@@ -263,6 +271,43 @@ if [ "${FREETOON_USB_HOST:-0}" = "1" ]; then
         rmdir "$BP" 2>/dev/null || true
     else
         say "USB host: $DEV not found — skipping."
+    fi
+fi
+
+# 4d) OPTIONAL: WASM-host ("Master/Slave") mode — opt-in via FT_MODE=wasm.
+# The stock qt-gui runs on the PANEL while freetoon runs HEADLESS (no
+# framebuffer): just the data daemons + pwa_server, so this Toon stays reachable
+# on :10081 as the WASM slave UI for phones/browsers — as a MASTER (serves its
+# own state) or, with MASTER_HOST set, as a SLAVE mirroring another master.
+#   curl -fsSL .../toon-selfinstall.sh | FT_MODE=wasm sh
+#   curl -fsSL .../toon-selfinstall.sh | FT_MODE=wasm MASTER_HOST=192.168.x.y sh
+if [ "${FT_MODE:-}" = wasm ] || [ "${FT_MODE:-}" = wasm-host ]; then
+    # ui_choice is a plain file read by the shell launchers (not toonui), so
+    # this switch is clobber-safe. ui_launcher.sh → qt-gui on the panel;
+    # the tuih row below → headless toonui serving :10081.
+    echo wasm > "$DEST/ui_choice"
+    say "WASM-host mode: panel = stock qt-gui, freetoon headless on :10081"
+    # Headless toonui runs under its OWN respawn row so it survives the
+    # healthcheck daily restart independently of the on-screen qt-gui.
+    TUIH="tuih:345:respawn:$DEST/toon_wasm_host.sh >> /var/volatile/tmp/toon_wasm_host.log 2>&1"
+    if [ -x "$DEST/toon_wasm_host.sh" ] && ! grep -qF "$TUIH" /etc/inittab 2>/dev/null; then
+        grep -v '^tuih:' /etc/inittab > /etc/inittab.new \
+            && echo "$TUIH" >> /etc/inittab.new \
+            && mv -f /etc/inittab.new /etc/inittab
+        say "added headless WASM-host inittab row (tuih)"
+        telinit q 2>/dev/null || kill -HUP 1 2>/dev/null || true
+    fi
+    if [ -n "${MASTER_HOST:-}" ]; then
+        # SLAVE: mirror a remote master over its /api. Persist into toonui.cfg,
+        # preserving any existing keys. (Best-effort; if a live toonui clobbers
+        # it on exit, set Master IP via Settings → Client mode instead.)
+        touch "$DEST/toonui.cfg"
+        { grep -v -e '^client_mode=' -e '^master_host=' "$DEST/toonui.cfg" 2>/dev/null;
+          echo "client_mode=1"; echo "master_host=$MASTER_HOST"; } > "$DEST/toonui.cfg.new" \
+            && mv -f "$DEST/toonui.cfg.new" "$DEST/toonui.cfg"
+        say "configured as SLAVE → master $MASTER_HOST (client_mode=1)"
+    else
+        say "configured as MASTER (serves this Toon's own state; no MASTER_HOST set)"
     fi
 fi
 
