@@ -85,11 +85,12 @@ unsigned int air_quality_color(int eco2, int tvoc) {
 }
 
 const char* program_label(void) {
-    /* activeState == -1 → manual override. Anything else → schedule is in
-     * the driver's seat and program_state holds the currently-active preset.
-     * UI surfaces it as "Scheduled: Home" so the *mode* (manual vs. on the
-     * schedule) is one tap away from being obvious. Returns a pointer into
-     * a static buffer; safe because LVGL copies labels on set_text. */
+    /* activeState == -1 → manual override. Anything else → the schedule is in
+     * the driver's seat and active_state holds the live comfort preset (NOT
+     * program_state — that's the scheme mode; mixing them up is the bug 4c1abaa
+     * fixed in the home/thermostat screens but missed here, so the dim screen
+     * showed the wrong program). Returns a pointer into a static string; safe
+     * because LVGL copies labels on set_text. */
     /* Short label suitable for ambient/dim use: just the active preset
      * name, or "Manual" when off the schedule. The home tile renders
      * the override-aware "(temp)" hint via its own logic next to the
@@ -99,7 +100,7 @@ const char* program_label(void) {
                                 temp_override_origin <= 3)
         origin = temp_override_origin;
     int preset_idx = (toon_state.active_state >= 0)
-                         ? toon_state.program_state : origin;
+                         ? toon_state.active_state : origin;
     if (preset_idx < 0) return "Manual";
     switch (preset_idx) {
         case 0: return "Comfort";
@@ -1208,7 +1209,7 @@ static void note_temp_override(void) {
          * the schedule says is current now; we still want the
          * auto-resume behaviour. */
         int origin = (toon_state.active_state >= 0)
-                         ? toon_state.program_state
+                         ? toon_state.active_state
                          : schedule_program_now();
         if (origin < 0) return;   /* no schedule loaded — leave it manual */
         temp_override_origin = origin;
