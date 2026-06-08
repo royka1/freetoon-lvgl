@@ -106,8 +106,9 @@ CFLAGS  := $(SYSROOTFLAG) $(ARCHFLAGS) -O2 -Wall -Wextra -Wno-unused-parameter -
            -MMD -MP
 LDFLAGS := $(SYSROOTFLAG) $(ARCHFLAGS) -pthread -lm -lrt $(GLIBC_LDFLAGS)
 
-# Sources
-LVGL_SRC      := $(shell find lvgl/src -name '*.c')
+# Sources. The GIF decoder is vendored out of the submodule (gifdec_vendored.c)
+# so our no-GCT patch survives a submodule reset — exclude the submodule's copy.
+LVGL_SRC      := $(filter-out lvgl/src/extra/libs/gif/gifdec.c, $(shell find lvgl/src -name '*.c'))
 APP_SRC       := $(ENTRY) $(GLIBC_SRC) boxtalk.c ui_stack.c screen_home.c screen_thermostat.c \
                  screen_dim.c screen_settings.c screen_schedule.c \
                  screen_stats.c screen_forecast.c screen_inbox.c \
@@ -121,7 +122,7 @@ APP_SRC       := $(ENTRY) $(GLIBC_SRC) boxtalk.c ui_stack.c screen_home.c screen
                  notify.c healthcheck.c pwa_server.c packages.c mqtt_client.c \
                  schedule.c icons.c backlight.c settings.c bootpick.c update_check.c \
                  tile_slots.c client_link.c news.c doorbell.c calendar.c layout.c \
-                 toon1_touch.c pin_modal.c video.c ui_cmd.c \
+                 toon1_touch.c pin_modal.c video.c ui_cmd.c gifdec_vendored.c \
                  lv_font_montserrat_96_custom.c lv_font_montserrat_64_custom.c
 ALL_SRC       := $(APP_SRC) $(LVGL_SRC) $(LVDRV_SRC)
 OBJ           := $(patsubst %.c,$(BUILDDIR)/%.o,$(ALL_SRC))
