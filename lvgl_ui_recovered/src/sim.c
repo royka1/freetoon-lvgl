@@ -15,6 +15,7 @@
 #include "display.h"
 #include "screens.h"
 #include "settings.h"
+#include "energy_hist.h"
 #include "homeassistant.h"
 #include "layout.h"
 #include "boxtalk.h"
@@ -222,6 +223,17 @@ int main(int argc, char ** argv) {
     if (getenv("TOONUI_SIM_CUSTOM_LAYOUT")) {
         settings.custom_layout_enabled = 1;
         layout_load_named("");
+    }
+    /* Sim-only: load a seeded energy-history ring + daily store ($TOONUI_DATA_DIR/
+     * freetoon_energy*.bin) so the Statistics screen renders real bars. */
+    if (getenv("TOONUI_SIM_ENERGY")) {
+        time_t nt = time(NULL); struct tm tmn; localtime_r(&nt, &tmn);
+        snprintf(settings.energy_daily_date, sizeof settings.energy_daily_date,
+                 "%04d-%02d-%02d", tmn.tm_year + 1900, tmn.tm_mon + 1, tmn.tm_mday);
+        settings.energy_daily_net_kwh  = 5.5f;
+        settings.energy_daily_gas_m3   = 1.2f;
+        settings.energy_daily_water_m3 = 0.18f;
+        energy_hist_start();
     }
 
     const char * mode = (argc > 1) ? argv[1] : "home";

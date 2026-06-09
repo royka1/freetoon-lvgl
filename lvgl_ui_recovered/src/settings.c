@@ -124,6 +124,11 @@ settings_t settings = {
     .energy_elec_prod_ha_entity = "",
     .energy_gas_ha_entity     = "",
     .energy_water_ha_entity   = "",
+    .energy_daily_date        = "",
+    .energy_daily_kwh         = 0,
+    .energy_daily_net_kwh     = 0,
+    .energy_daily_gas_m3      = 0,
+    .energy_daily_water_m3    = 0,
 
     /* Toon 1 panel mounting orientation — TSC2007 reports Y flipped vs the
      * framebuffer on EVERY Toon 1 (not a per-device tweak). Default this
@@ -345,9 +350,16 @@ void settings_load(void) {
         else if (strcmp(k, "energy_elec_prod_ha_entity")  == 0) snprintf(settings.energy_elec_prod_ha_entity, sizeof settings.energy_elec_prod_ha_entity, "%s", v);
         else if (strcmp(k, "energy_gas_ha_entity")        == 0) snprintf(settings.energy_gas_ha_entity, sizeof settings.energy_gas_ha_entity, "%s", v);
         else if (strcmp(k, "energy_water_ha_entity")      == 0) snprintf(settings.energy_water_ha_entity, sizeof settings.energy_water_ha_entity, "%s", v);
-        else if (strcmp(k, "energy_elec_dz_idx")  == 0) settings.energy_elec_dz_idx  = iv;
-        else if (strcmp(k, "energy_gas_dz_idx")   == 0) settings.energy_gas_dz_idx   = iv;
-        else if (strcmp(k, "energy_water_dz_idx") == 0) settings.energy_water_dz_idx = iv;
+        else if (strcmp(k, "energy_elec_dz_idx")       == 0) settings.energy_elec_dz_idx       = iv;
+        else if (strcmp(k, "energy_elec_prod_dz_idx")  == 0) settings.energy_elec_prod_dz_idx  = iv;
+        else if (strcmp(k, "energy_gas_dz_idx")        == 0) settings.energy_gas_dz_idx        = iv;
+        else if (strcmp(k, "energy_water_dz_idx")      == 0) settings.energy_water_dz_idx      = iv;
+        else if (strcmp(k, "energy_daily_date")        == 0)
+            snprintf(settings.energy_daily_date, sizeof settings.energy_daily_date, "%s", v);
+        else if (strcmp(k, "energy_daily_kwh")         == 0) settings.energy_daily_kwh        = (float)atof(v);
+        else if (strcmp(k, "energy_daily_net_kwh")     == 0) settings.energy_daily_net_kwh    = (float)atof(v);
+        else if (strcmp(k, "energy_daily_gas_m3")      == 0) settings.energy_daily_gas_m3     = (float)atof(v);
+        else if (strcmp(k, "energy_daily_water_m3")    == 0) settings.energy_daily_water_m3   = (float)atof(v);
         else if (strcmp(k, "boot_picker_enabled") == 0) settings.boot_picker_enabled = iv;
         else if (strcmp(k, "hide_offline_tiles")  == 0) settings.hide_offline_tiles = iv;
         else if (strcmp(k, "update_check_enabled") == 0) settings.update_check_enabled = iv;
@@ -680,9 +692,16 @@ void settings_save(void) {
         fprintf(f, "energy_gas_ha_entity=%s\n", settings.energy_gas_ha_entity);
     if (settings.energy_water_ha_entity[0])
         fprintf(f, "energy_water_ha_entity=%s\n", settings.energy_water_ha_entity);
-    fprintf(f, "energy_elec_dz_idx=%d\n",  settings.energy_elec_dz_idx);
-    fprintf(f, "energy_gas_dz_idx=%d\n",   settings.energy_gas_dz_idx);
-    fprintf(f, "energy_water_dz_idx=%d\n", settings.energy_water_dz_idx);
+    fprintf(f, "energy_elec_dz_idx=%d\n",       settings.energy_elec_dz_idx);
+    fprintf(f, "energy_elec_prod_dz_idx=%d\n",  settings.energy_elec_prod_dz_idx);
+    fprintf(f, "energy_gas_dz_idx=%d\n",        settings.energy_gas_dz_idx);
+    fprintf(f, "energy_water_dz_idx=%d\n",      settings.energy_water_dz_idx);
+    if (settings.energy_daily_date[0])
+        fprintf(f, "energy_daily_date=%s\n",       settings.energy_daily_date);
+    fprintf(f, "energy_daily_kwh=%.3f\n",       settings.energy_daily_kwh);
+    fprintf(f, "energy_daily_net_kwh=%.3f\n",   settings.energy_daily_net_kwh);
+    fprintf(f, "energy_daily_gas_m3=%.4f\n",    settings.energy_daily_gas_m3);
+    fprintf(f, "energy_daily_water_m3=%.4f\n",  settings.energy_daily_water_m3);
     fprintf(f, "boot_picker_enabled=%d\n", settings.boot_picker_enabled);
     fprintf(f, "hide_offline_tiles=%d\n",  settings.hide_offline_tiles);
     fprintf(f, "update_check_enabled=%d\n", settings.update_check_enabled);

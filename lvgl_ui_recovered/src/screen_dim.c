@@ -11,6 +11,7 @@
 #include "domoticz.h"
 #include "meteradapter.h"
 #include "homeassistant.h"
+#include "energy_hist.h"
 #include "packages.h"
 #include "weather.h"
 #include "wastecollection.h"
@@ -541,21 +542,28 @@ static void refresh_cb(lv_timer_t * t) {
      * = gas LEFT, energy RIGHT. Each bar reads from its independently-
      * configured source (ENERGY_SRC_* in settings). */
     if (bar_l_env) {
-        /* Electricity bar — per-source dispatch */
-        int   e_conn;
-        float e;
+        /* Electricity bar — per-source dispatch, with production awareness.
+         * When the net is exporting (production > consumption), the bar turns
+         * green and shows the export power. Otherwise white for consumption. */
+        int   e_conn; float e, eprod = 0;
+        uint32_t ecolor = 0xffffff;
         switch (settings.energy_elec_source) {
         case ENERGY_SRC_ZWAVE:    e_conn = meter_state.connected; e = meter_state.power_w; break;
         case ENERGY_SRC_HW_P1:    e_conn = hw_state.connected_p1; e = hw_state.power_w; break;
-        case ENERGY_SRC_HA:       e_conn = ha_energy.connected;   e = ha_energy.power_w; break;
-        case ENERGY_SRC_DOMOTICZ: e_conn = dz_energy.connected;   e = dz_energy.power_w; break;
+        case ENERGY_SRC_HA:       e_conn = ha_energy.connected;   e = ha_energy.power_w;
+                                  eprod  = ha_energy.power_prod_w; break;
+        case ENERGY_SRC_DOMOTICZ: e_conn = dz_energy.connected;   e = dz_energy.power_w;
+                                  eprod  = dz_energy.power_prod_w; break;
         default:                  e_conn = 0; e = 0; break;
         }
-        if (e < 0) e = 0;
-        float er = e / DIM_E_FULL_W;
+        /* P1 reports signed power (negative = export). HA/Domoticz have
+         * separate prod sensors. Normalise: net negative → green bar. */
+        float net = e - eprod;
+        if (net < 0) { net = -net; ecolor = 0x44dd66; }
+        float er = net / DIM_E_FULL_W;
         char etxt[24];
-        if (e >= 1000) snprintf(etxt, sizeof etxt, "%.1f kW", e / 1000.0f);
-        else           snprintf(etxt, sizeof etxt, "%.0f W", e);
+        if (net >= 1000) snprintf(etxt, sizeof etxt, "%.1f kW", net / 1000.0f);
+        else             snprintf(etxt, sizeof etxt, "%.0f W", net);
 
         /* Gas bar — per-source dispatch for hourly m³/h */
         int   g_conn;
@@ -575,9 +583,9 @@ static void refresh_cb(lv_timer_t * t) {
         int show = settings.show_dim_bars;
         if (!settings.dim_bars_swap) {
             dim_bar_set(bar_l_env, bar_l_fill, bar_l_cap, -1, show && g_conn, 0, gr, 0xffaa33, gtxt);
-            dim_bar_set(bar_r_env, bar_r_fill, bar_r_cap, +1, show && e_conn, 0, er, 0xffffff, etxt);
+            dim_bar_set(bar_r_env, bar_r_fill, bar_r_cap, +1, show && e_conn, 0, er, ecolor, etxt);
         } else {
-            dim_bar_set(bar_l_env, bar_l_fill, bar_l_cap, -1, show && e_conn, 0, er, 0xffffff, etxt);
+            dim_bar_set(bar_l_env, bar_l_fill, bar_l_cap, -1, show && e_conn, 0, er, ecolor, etxt);
             dim_bar_set(bar_r_env, bar_r_fill, bar_r_cap, +1, show && g_conn, 0, gr, 0xffaa33, gtxt);
         }
     }

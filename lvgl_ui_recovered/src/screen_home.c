@@ -25,6 +25,7 @@
 #include "client_link.h"
 #include "news.h"
 #include "calendar.h"
+#include "energy_hist.h"
 #include "packages.h"
 #include "tile_slots.h"
 #include "layout.h"
@@ -301,7 +302,8 @@ static float energy_elec_prod_w(void) {
     if (settings.energy_elec_source == ENERGY_SRC_HA &&
         settings.energy_elec_prod_ha_entity[0])
         return ha_energy.power_prod_w;
-    if (settings.energy_elec_source == ENERGY_SRC_DOMOTICZ)
+    if (settings.energy_elec_source == ENERGY_SRC_DOMOTICZ &&
+        settings.energy_elec_prod_dz_idx > 0)
         return dz_energy.power_prod_w;
     return 0;
 }
@@ -1781,15 +1783,29 @@ static void refresh_cb(lv_timer_t * t) {
        has taken over this slot. */
     if (!slot_active[TILE_SLOT_ENERGY]) {
         if (lbl_energy_w) {
-            if (energy_elec_connected())
-                lv_label_set_text_fmt(lbl_energy_w, "%.0f W", energy_elec_power_w());
-            else
+            if (energy_elec_connected()) {
+                float pw = energy_elec_power_w();
+                float prod = energy_elec_prod_w();
+                float net = pw - prod;
+                if (net < -5)
+                    lv_label_set_text_fmt(lbl_energy_w, "%.0f W solar", -net);
+                else
+                    lv_label_set_text_fmt(lbl_energy_w, "%.0f W", pw > 0 ? pw : 0);
+            } else {
                 lv_label_set_text(lbl_energy_w, energy_offline_label());
+            }
         }
         if (lbl_energy_gas) {
             float g = energy_gas_m3();
             if (g >= 0) lv_label_set_text_fmt(lbl_energy_gas, "%.0f m3 gas", g);
             else if (energy_elec_connected()) lv_label_set_text(lbl_energy_gas, "via meter");
+        }
+        if (lbl_energy_today) {
+            float dk = energy_hist_daily_kwh();
+            if (dk > 0.001f)
+                lv_label_set_text_fmt(lbl_energy_today, "%.1f kWh today", dk);
+            else
+                lv_label_set_text(lbl_energy_today, "");
         }
     }
 
@@ -1963,11 +1979,16 @@ static void refresh_cb(lv_timer_t * t) {
     if (lbl_bot_energy) {
         if (energy_elec_connected()) {
             float g = energy_gas_m3();
-            if (g >= 0)
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                      energy_elec_power_w(), g);
-            else
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_elec_power_w());
+            float pw = energy_elec_power_w();
+            float prod = energy_elec_prod_w();
+            float net = pw - prod;
+            if (net < -5) {
+                if (g >= 0) lv_label_set_text_fmt(lbl_bot_energy, "%.0fW solar\n%.0f m3 gas", -net, g);
+                else        lv_label_set_text_fmt(lbl_bot_energy, "%.0fW solar", -net);
+            } else {
+                if (g >= 0) lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas", pw, g);
+                else        lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", pw);
+            }
         } else {
             lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }
@@ -2218,11 +2239,16 @@ static void refresh_cb(lv_timer_t * t) {
     if (lbl_bot_energy) {
         if (energy_elec_connected()) {
             float g = energy_gas_m3();
-            if (g >= 0)
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                      energy_elec_power_w(), g);
-            else
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_elec_power_w());
+            float pw = energy_elec_power_w();
+            float prod = energy_elec_prod_w();
+            float net = pw - prod;
+            if (net < -5) {
+                if (g >= 0) lv_label_set_text_fmt(lbl_bot_energy, "%.0fW solar\n%.0f m3 gas", -net, g);
+                else        lv_label_set_text_fmt(lbl_bot_energy, "%.0fW solar", -net);
+            } else {
+                if (g >= 0) lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas", pw, g);
+                else        lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", pw);
+            }
         } else {
             lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }
@@ -2334,11 +2360,16 @@ static void refresh_cb(lv_timer_t * t) {
     if (lbl_bot_energy) {
         if (energy_elec_connected()) {
             float g = energy_gas_m3();
-            if (g >= 0)
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas",
-                                      energy_elec_power_w(), g);
-            else
-                lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", energy_elec_power_w());
+            float pw = energy_elec_power_w();
+            float prod = energy_elec_prod_w();
+            float net = pw - prod;
+            if (net < -5) {
+                if (g >= 0) lv_label_set_text_fmt(lbl_bot_energy, "%.0fW solar\n%.0f m3 gas", -net, g);
+                else        lv_label_set_text_fmt(lbl_bot_energy, "%.0fW solar", -net);
+            } else {
+                if (g >= 0) lv_label_set_text_fmt(lbl_bot_energy, "%.0f W\n%.0f m3 gas", pw, g);
+                else        lv_label_set_text_fmt(lbl_bot_energy, "%.0f W", pw);
+            }
         } else {
             lv_label_set_text(lbl_bot_energy, energy_offline_label());
         }

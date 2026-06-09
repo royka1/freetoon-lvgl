@@ -137,8 +137,17 @@ typedef struct {
     /* Domoticz device idx per channel (ENERGY_SRC_DOMOTICZ). The elec device's
      * Usage/UsageDeliv give power + return; gas/water use the Counter total. */
     int  energy_elec_dz_idx;
+    int  energy_elec_prod_dz_idx;
     int  energy_gas_dz_idx;
     int  energy_water_dz_idx;
+
+    /* Daily energy accumulation — persisted so dim-screen bars and the
+     * statistics screen survive restarts. Date is "YYYY-MM-DD". */
+    char  energy_daily_date[16];
+    float energy_daily_kwh;
+    float energy_daily_net_kwh;   /* signed net (negative = solar export) for Stats */
+    float energy_daily_gas_m3;
+    float energy_daily_water_m3;
 
     /* Boot-picker — when 1, the launcher-spawned `toonui --bootpick`
      * shows a 10 s "freetoon vs stock qt-gui" picker before dispatching.

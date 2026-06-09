@@ -69,6 +69,8 @@ static const char * const en[I18N_COUNT] = {
     [I18N_MARKETPLACE_DESC]     = "install integrations",
     [I18N_CRYPTO_DESC]          = "track crypto prices",
     [I18N_NEWSREADER_DESC]      = "RSS headlines ticker",
+    [I18N_STATISTICS]           = "Statistics",
+    [I18N_STATISTICS_DESC]      = "energy usage history",
     [I18N_ITHO_VENT]            = "Itho ventilation",
     [I18N_ITHO_VENT_DESC]       = "Itho WiFi add-on module",
 
@@ -145,6 +147,8 @@ static const char * const nl[I18N_COUNT] = {
     [I18N_MARKETPLACE_DESC]     = "integraties installeren",
     [I18N_CRYPTO_DESC]          = "cryptoprijzen volgen",
     [I18N_NEWSREADER_DESC]      = "RSS nieuwskoppen",
+    [I18N_STATISTICS]           = "Statistieken",
+    [I18N_STATISTICS_DESC]      = "energieverbruik geschiedenis",
     [I18N_ITHO_VENT]            = "Itho ventilatie",
     [I18N_ITHO_VENT_DESC]       = "Itho WiFi add-on module",
 

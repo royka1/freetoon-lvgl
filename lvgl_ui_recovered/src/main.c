@@ -15,6 +15,7 @@
 #include "update_check.h"
 #include "backlight.h"
 #include "homewizard.h"
+#include "energy_hist.h"
 #include "weather.h"
 #include "otgw.h"
 #include "wastecollection.h"
@@ -192,6 +193,7 @@ int main(int argc, char** argv) {
 
     extern void airhist_start(void);
     airhist_start();   /* record eCO2/TVOC history (RRD doesn't) for Stats graphs */
+    energy_hist_start();  /* record energy/gas/water for Stats + daily persistence */
     if (headless) {
         /* No display: the daemons + pwa_server own their own threads, so just
          * stay alive and let init NOT respawn us. We deliberately skip the

@@ -52,6 +52,7 @@ enum i18n_key {
     I18N_MARKETPLACE,
     I18N_CRYPTO,
     I18N_NEWSREADER,
+    I18N_STATISTICS,
 
     /* Settings — item descriptions */
     I18N_HEATING_CONFIG_DESC,
@@ -84,6 +85,7 @@ enum i18n_key {
     I18N_MARKETPLACE_DESC,
     I18N_CRYPTO_DESC,
     I18N_NEWSREADER_DESC,
+    I18N_STATISTICS_DESC,
 
     /* Itho ventilation */
     I18N_ITHO_VENT,

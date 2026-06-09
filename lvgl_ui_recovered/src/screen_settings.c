@@ -1868,6 +1868,11 @@ static void open_uimode_modal(lv_event_t * e) {
     lv_obj_center(bsw_l);
 }
 
+static void open_stats(lv_event_t * e) {
+    (void)e;
+    ui_push(screen_stats_create());
+}
+
 /* ==================== Integrations modal ====================
  * Per-resource energy/water source selection with conditional UI:
  * dropdowns for Electricity, Gas, Water — each showing the right config
@@ -1886,8 +1891,9 @@ static lv_obj_t * row_gas_ha, * ta_gas_ha;
 static lv_obj_t * row_gas_hw_note;
 static lv_obj_t * row_water_ha, * ta_water_ha;
 static lv_obj_t * row_water_hw_host, * ta_water_hw_host;
-static lv_obj_t * row_elec_dz,  * ta_elec_dz_idx;   /* Domoticz device idx fields */
-static lv_obj_t * row_gas_dz,   * ta_gas_dz_idx;
+static lv_obj_t * row_elec_dz,      * ta_elec_dz_idx;   /* Domoticz device idx fields */
+static lv_obj_t * row_elec_dz_prod, * ta_elec_dz_prod_idx;
+static lv_obj_t * row_gas_dz,       * ta_gas_dz_idx;
 static lv_obj_t * row_water_dz, * ta_water_dz_idx;
 static lv_obj_t * lbl_gas_header;    /* "Gas source:" label — repositioned on elec change */
 static lv_obj_t * lbl_water_header;  /* "Water source:" label */
@@ -1953,8 +1959,9 @@ static void energy_save_textareas(void) {
     ta_flush(ta_gas_ha,       settings.energy_gas_ha_entity,       sizeof settings.energy_gas_ha_entity);
     ta_flush(ta_water_ha,     settings.energy_water_ha_entity,     sizeof settings.energy_water_ha_entity);
     ta_flush(ta_water_hw_host, settings.p1_water_host,             sizeof settings.p1_water_host);
-    ta_flush_int(ta_elec_dz_idx,  &settings.energy_elec_dz_idx);
-    ta_flush_int(ta_gas_dz_idx,   &settings.energy_gas_dz_idx);
+    ta_flush_int(ta_elec_dz_idx,      &settings.energy_elec_dz_idx);
+    ta_flush_int(ta_elec_dz_prod_idx, &settings.energy_elec_prod_dz_idx);
+    ta_flush_int(ta_gas_dz_idx,       &settings.energy_gas_dz_idx);
     ta_flush_int(ta_water_dz_idx, &settings.energy_water_dz_idx);
 }
 
@@ -1978,6 +1985,10 @@ static void energy_elec_update_vis(void) {
     if (row_elec_dz) {
         if (src == ENERGY_SRC_DOMOTICZ) lv_obj_clear_flag(row_elec_dz, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(row_elec_dz, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (row_elec_dz_prod) {
+        if (src == ENERGY_SRC_DOMOTICZ) lv_obj_clear_flag(row_elec_dz_prod, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(row_elec_dz_prod, LV_OBJ_FLAG_HIDDEN);
     }
     settings_save();
 }
@@ -2045,7 +2056,8 @@ static void energy_relayout(void) {
         y = row_y + ROW_H;
     } else if (src == ENERGY_SRC_DOMOTICZ) {
         lv_obj_set_pos(row_elec_dz, SX(4), SY(row_y));
-        y = row_y + ROW_H;
+        lv_obj_set_pos(row_elec_dz_prod, SX(4), SY(row_y + ROW_H));
+        y = row_y + 2 * ROW_H;
     } else {
         y = y + DD_OFF + DD_H;
     }
@@ -2185,6 +2197,7 @@ static void energy_modal_cleanup(void) {
     row_water_ha = NULL; ta_water_ha = NULL;
     row_water_hw_host = NULL; ta_water_hw_host = NULL;
     row_elec_dz = NULL; ta_elec_dz_idx = NULL;
+    row_elec_dz_prod = NULL; ta_elec_dz_prod_idx = NULL;
     row_gas_dz  = NULL; ta_gas_dz_idx  = NULL;
     row_water_dz = NULL; ta_water_dz_idx = NULL;
     lbl_gas_header = NULL; lbl_water_header = NULL;
@@ -2256,6 +2269,25 @@ static void open_energy_sources_modal(lv_event_t * e) {
                               settings.energy_elec_dz_idx, &ta_elec_dz_idx);
     if (settings.energy_elec_source != ENERGY_SRC_DOMOTICZ)
         lv_obj_add_flag(row_elec_dz, LV_OBJ_FLAG_HIDDEN);
+
+    row_elec_dz_prod = lv_obj_create(p);
+    lv_obj_set_size(row_elec_dz_prod, SX(824), SY(66));
+    lv_obj_set_style_bg_color(row_elec_dz_prod, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_elec_dz_prod, 0, 0);
+    lv_obj_set_style_radius(row_elec_dz_prod, 8, 0);
+    lv_obj_set_style_pad_all(row_elec_dz_prod, 6, 0);
+    lv_obj_clear_flag(row_elec_dz_prod, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_elec_dz_prod, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 144));
+    {   char b[16];
+        if (settings.energy_elec_prod_dz_idx > 0)
+            snprintf(b, sizeof b, "%d", settings.energy_elec_prod_dz_idx);
+        else b[0] = 0;
+        ta_elec_dz_prod_idx = energy_field(row_elec_dz_prod, 4, -6, 760,
+            "Domoticz production/solar idx (optional):", b, 0, NULL);
+        ta_make_numeric(ta_elec_dz_prod_idx);
+    }
+    if (settings.energy_elec_source != ENERGY_SRC_DOMOTICZ)
+        lv_obj_add_flag(row_elec_dz_prod, LV_OBJ_FLAG_HIDDEN);
 
     y += 214;
 
@@ -2361,6 +2393,7 @@ static void open_integrations_modal(lv_event_t * e) {
     /* Energy source section (3 dropdowns + conditional fields) + 3 switches
      * + hint + HA button. Modal height bumped to fit everything. */
     lv_obj_t * p = modal_open("Integrations", 1100);
+    modal_cleanup_fn = energy_modal_cleanup;
     lv_obj_add_flag(p, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(p, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(p, LV_SCROLLBAR_MODE_AUTO);
@@ -2426,6 +2459,25 @@ static void open_integrations_modal(lv_event_t * e) {
                               settings.energy_elec_dz_idx, &ta_elec_dz_idx);
     if (settings.energy_elec_source != ENERGY_SRC_DOMOTICZ)
         lv_obj_add_flag(row_elec_dz, LV_OBJ_FLAG_HIDDEN);
+
+    row_elec_dz_prod = lv_obj_create(p);
+    lv_obj_set_size(row_elec_dz_prod, SX(824), SY(66));
+    lv_obj_set_style_bg_color(row_elec_dz_prod, lv_color_hex(0x1a2d45), 0);
+    lv_obj_set_style_border_width(row_elec_dz_prod, 0, 0);
+    lv_obj_set_style_radius(row_elec_dz_prod, 8, 0);
+    lv_obj_set_style_pad_all(row_elec_dz_prod, 6, 0);
+    lv_obj_clear_flag(row_elec_dz_prod, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(row_elec_dz_prod, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 144));
+    {   char b[16];
+        if (settings.energy_elec_prod_dz_idx > 0)
+            snprintf(b, sizeof b, "%d", settings.energy_elec_prod_dz_idx);
+        else b[0] = 0;
+        ta_elec_dz_prod_idx = energy_field(row_elec_dz_prod, 4, -6, 760,
+            "Domoticz production/solar idx (optional):", b, 0, NULL);
+        ta_make_numeric(ta_elec_dz_prod_idx);
+    }
+    if (settings.energy_elec_source != ENERGY_SRC_DOMOTICZ)
+        lv_obj_add_flag(row_elec_dz_prod, LV_OBJ_FLAG_HIDDEN);
 
     y += 214;
 
@@ -4489,6 +4541,7 @@ static lv_obj_t * screen_settings_category_create(char cat) {
         TILE(LV_SYMBOL_LIST,     I18N_CALENDAR,        I18N_CALENDAR_DESC,        open_calendar_modal);
         TILE(LV_SYMBOL_TRASH,    I18N_WASTE_COLLECTION,I18N_WASTE_COLLECTION_DESC,open_waste_modal);
         TILE(LV_SYMBOL_LIST,     I18N_WEATHER,         I18N_WEATHER_DESC,         open_weather_modal);
+        TILE(LV_SYMBOL_CHARGE,   I18N_STATISTICS,      I18N_STATISTICS_DESC,      open_stats);
         if (settings.enable_vent)
             TILE(LV_SYMBOL_LIST, I18N_VENTILATION,     I18N_VENTILATION_DESC,     open_vent_modal);
         break;
