@@ -477,7 +477,7 @@ static int handle_tile_proxy(int fd, const char * query) {
     char out[64];
     snprintf(out, sizeof out, "/tmp/_tile_%d_%d_%d.png", z, x, y);
     snprintf(cmd, sizeof cmd,
-        "curl -fsSL -m 12 -A 'freetoon-master/1.0 (+https://github.com/Ierlandfan/freetoon-lvgl)' "
+        "curl -fsSL -m 12 -A 'freetoon-master/1.0 (+https://github.com/royka1/freetoon-lvgl)' "
         "-o '%s' 'https://tile.openstreetmap.org/%d/%d/%d.png'",
         out, z, x, y);
     int rc = system(cmd);

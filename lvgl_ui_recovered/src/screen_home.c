@@ -680,7 +680,7 @@ static void do_install_now(lv_event_t * e) {
     /* Truncate the log so the modal starts from this run's markers, then fire
        the installer detached. */
     system("nohup sh -c ': > " UPD_LOG_PATH "; sleep 1; curl -fsSL "
-           "https://raw.githubusercontent.com/Ierlandfan/freetoon-lvgl/main/scripts/toon-selfinstall.sh "
+           "https://raw.githubusercontent.com/royka1/freetoon-lvgl/main/scripts/toon-selfinstall.sh "
            "| sh' >> " UPD_LOG_PATH " 2>&1 &");
 
     if (!upd_prog_timer)

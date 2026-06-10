@@ -99,7 +99,7 @@ check_artefacts() {
         echo "If this is a release tarball, expand it first and run install.sh from inside it." >&2
         echo "If this is the dev tree, build toonui with 'make' in lvgl_ui_recovered/src/." >&2
         echo "Or just run the one-liner ON the Toon (no local build needed):" >&2
-        echo "  curl -fsSL https://raw.githubusercontent.com/Ierlandfan/freetoon-lvgl/main/scripts/toon-selfinstall.sh | sh" >&2
+        echo "  curl -fsSL https://raw.githubusercontent.com/royka1/freetoon-lvgl/main/scripts/toon-selfinstall.sh | sh" >&2
         exit 3
     }
     # Non-fatal: VNC just stays view-only without the input bridge. Printed

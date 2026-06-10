@@ -1,320 +1,97 @@
 # freetoon-lvgl
 
-A from-scratch UI and integration stack for the **Eneco Toon 1 / Toon 2** smart
-thermostat that runs entirely on the device — no cloud, no Quby login, no
-subscription. The stock Qt UI is replaced with an LVGL app; a small constellation
-of side processes brings the hardware back to life (boiler, P1 meter, vent,
-weather, packages) and exposes everything over a tiny progressive web app so
-you can also drive the house from your phone.
+A from-scratch, **on-device** UI and integration stack for the **Eneco Toon 1 / Toon 2**
+smart thermostat — no cloud, no Quby login, no subscription. The stock Qt UI is replaced
+with an LVGL app, and a small constellation of side processes brings the hardware back to
+life (boiler, P1 meter, ventilation, weather, packages) and exposes it over a tiny
+self-hosted web app so you can also drive the house from your phone.
 
-![Demo](docs/demo.gif)
-
-*9-frame loop pulled live from the device framebuffer at v0.7.4 —
-home (live CV pressure, moon-phase widget) → dim ambient → boot
-picker → buienradar radar → heater detail → schedule editor →
-graphs → settings → lights.*
+> **This is a fork of [Ierlandfan/freetoon-lvgl](https://github.com/Ierlandfan/freetoon-lvgl)**
+> (original project © Ierlandfan, MIT). It adds a Toon 1 port, unified Home Assistant +
+> Domoticz + Z-Wave control, an on-device energy-statistics database, and more — see
+> **[What this fork adds](#what-this-fork-adds)** and **[Credits & license](#credits--license)**.
 
 ![Home screen](docs/screenshots/home.png)
 
-![Boot picker](docs/screenshots/boot-picker.png)
-*The 10-second picker every boot — pick `freetoon-lvgl` or `Stock qt-gui` and the device dispatches `inittab` accordingly. Same modal lives in Settings → UI mode for in-session switching.*
+## What this fork adds
+
+- **Toon 1 support** — full port to the older i.MX27 hardware (800×480, 16bpp, glibc 2.21),
+  alongside the existing Toon 2 (1024×600, 32bpp). One codebase, `make TARGET=toon1|toon2`.
+- **Unified smart-home devices** — Home Assistant, Domoticz **and** Z-Wave lights / covers /
+  switches / scenes in a single **Devices** screen (and optional on-home tiles), driven over
+  WebSocket with a searchable entity picker. Manage them from Settings.
+- **Energy statistics with its own database** — an on-device history recorder (5-minute ring
+  for fine detail + a multi-year daily-totals store) feeding a stock-Toon-style
+  **Hour / Day / Week / Month / Year** graph. Works with **any** configured source
+  (HA / Domoticz / Z-Wave / built-in P1), falls back to the Toon's RRD for older history,
+  shows **solar production in green**, and pages back in time with ← / →.
+- **Weather** — Buienradar 5-day + 3-hourly forecast, updated for the 2026 endpoint change
+  (the old `data.buienradar.nl` feed went dead).
+- Plus: waste/recycling calendar, MQTT device reads, a live video tile, night-mode dimming,
+  a boot picker (freetoon vs. stock qt-gui), and a multi-language UI.
 
 ## Why
 
-Eneco discontinued cloud support for the original Toon: no more app, no more
-weather, no more package tracking, no more software updates. The device itself
-is a perfectly capable iMX28 box with a 1024×600 touchscreen, an OpenTherm
-adapter, an i.MX P1-meter UART and a humidity/temperature sensor — too good to
-land on a shelf.
-
-`freetoon-lvgl` keeps the thermostat doing what it's good at (running OpenTherm,
-modulating the boiler, reading the room) while replacing the parts that
-required a server somewhere:
+Eneco discontinued cloud support for the original Toon: no app, no weather, no package
+tracking, no updates. The hardware is still a perfectly capable touchscreen box with an
+OpenTherm adapter, a P1-meter UART and environmental sensors — too good to shelve. This
+project keeps the thermostat doing what it's good at while replacing the parts that needed
+a server:
 
 | Lost piece | Replacement |
 |---|---|
-| Eneco cloud UI | LVGL app on the framebuffer + LVGL "dim" ambient screen |
+| Eneco cloud UI | LVGL app on the framebuffer + an ambient "dim" screen |
 | Mobile app | Self-hosted PWA served from the Toon itself |
 | Weather forecast | Direct Buienradar pull |
-| Energy graphs | P1 bridge → MQTT → Home Assistant (or local view) |
-| Package tracking | IMAP-driven HA automation → MQTT → on-device banner |
-| Ventilation control | Itho Wifi addon REST API integration |
+| Energy graphs | On-device history database **+** optional P1 → MQTT → Home Assistant |
+| Package tracking | IMAP → HA automation → MQTT → on-device banner |
+| Ventilation control | Itho Wifi add-on REST integration |
 | Schedule editor | Native LVGL screen + PWA editor |
 
-## What's in this repo
+## Build
 
-```
-lvgl_ui_recovered/      The LVGL replacement UI
-  src/
-    main.c              entry point + tick/timer setup
-    boxtalk.c           BoxTalk client — speaks to happ_thermstat over TCP 1337
-    quby_bridge ↗       see quby_bridge/ — Quby-protocol bridge to keteladapter
-    homeassistant.c     HA REST client (curtains, notify, generic)
-    homewizard.c        HWE-P1 + HWE-WTR pollers
-    ventilation.c       Itho Wifi addon REST client
-    mqtt_client.c       Hand-rolled MQTT 3.1.1 subscriber (no libmosquitto)
-    packages.c          Tap-to-dismiss banner queue, MQTT-fed
-    pwa_server.c        HTTP + SSE server for the PWA on :10081
-    screen_home.c       Main tile grid (heater / vent / energy / water / waste)
-    screen_dim.c        Ambient screen (clock + temp + flame + forecast)
-    screen_thermostat.c "Heater detail" page (OT health, boiler flow/return)
-    screen_settings.c   On-device config (MQTT, weather, brightness, …)
-    screen_schedule.c   Weekly Comfort/Home/Sleep/Away scheduler
-    schedule.c          Read/write hcb_config schedule JSON
-    healthcheck.c       /healthz endpoint + watchdog + daily restart
-    settings.c          Persistent /mnt/data/toonui.cfg
-    gen_icons.py        Bitmap-icon generator (flame, drop, faucet, fan,
-                          radiator, weather, waste) — runs at build time
-    pwa_server.c        :10081 — serves ONLY the WASM slave UI (/ui/) + /api/*
+The UI lives in `lvgl_ui_recovered/src`. You need an ARM cross-toolchain targeting
+**glibc 2.21** (the path is set in the Makefile's `CC` / `SYSROOT`).
 
-quby_bridge/            Userspace bridge for keteladapter (replaces stock BA)
-p1bridge/               Pushes HWE-P1 readings into hcb_rrd
-ha_packages/            HA-side package-tracking automation (deploy.py)
-web/                    WASM slave UI (shell.html + build.sh) — the only
-                        frontend pwa_server serves on :10081, at /ui/
-scripts/                Helpers (ot_mode_switch.sh: proxy/wireless/off)
-install.sh              One-shot deploy from a Linux host to a Toon
-toonshot.sh             Pull /dev/fb0 over SSH → PNG (debug helper)
-toontap.sh              Inject a touch event into /dev/input/event1
+```sh
+cd lvgl_ui_recovered/src
+
+make TARGET=toon1             # Toon 1 binary  → ../build-toon1/toonui-toon1
+make TARGET=toon2             # Toon 2 binary  → ../build-toon2/toonui-toon2
+make TARGET=toon1 abi-check   # verify nothing newer than GLIBC_2.21 is required
+
+make TARGET=sim1              # x86 simulator (Toon 1 config, 16bpp)
+./build-sim1/toonui-sim1 home /tmp/out.ppm   # render a screen to a PPM for inspection
 ```
 
-## Screens
-
-### Home
-The default LVGL screen. Big tiles for the main signals — indoor temperature
-and setpoint, boiler state (with the original-Toon-style radiator+flame icon
-when CH is firing), waste-collection reminders, live energy + gas, ventilation
-preset + RPM, water flow, curtains. A 5-day weather forecast lives at the
-bottom. Tap the heater tile for OT detail; tap the gear-corner for settings.
-
-![Home](docs/screenshots/home.png)
-
-### Dim / ambient
-After the configured idle timeout the screen drops to a near-black ambient
-view: clock, indoor temperature with a small radiator+flame indicator when
-the boiler is firing, vent fan spinner on the left mirroring the flame on
-the right, top trash hint, top-right outdoor temperature, package banners
-at the top, weather strip at the bottom.
-
-![Dim](docs/screenshots/dim.png)
-
-### Heater detail
-Tap the heater tile from home to see boiler-side telemetry — flow + return
-water temps, modulation level, CH setpoint from the stooklijn, water
-pressure, eCO₂ / TVOC / humidity. The `Advanced` button opens a full dump
-of every OpenTherm DataId currently tracked by OTGW.
-
-### PWA (WASM slave UI)
-Served at `http://<toon>:10081/` from the device itself (bare `/` redirects to
-`/ui/`). This is the **full LVGL UI compiled to WebAssembly** — the exact same
-screens as the device, running in any LAN browser as a same-origin *slave* of
-the master Toon's `/api/state/stream`. It is the only frontend on `:10081`;
-there is no separate simple HTML app or settings page. Optionally gated behind
-the PWA login (`pwa_login_*` in `toonui.cfg`).
-
-### Boot picker — escape hatch to stock qt-gui
-
-Every boot opens a 10-second picker letting the user choose between
-freetoon-lvgl and the original Eneco qt-gui. Default selection (the
-highlighted tile) is whichever was used last; the countdown falls
-through to that default. Same modal is reachable mid-session from
-**Settings → UI mode**. This means the device is never "trapped" on
-freetoon — anyone can switch back to stock qt-gui in seconds without
-SSH access.
-
-![Boot picker](docs/screenshots/boot-picker.png)
-
-The picker writes `/mnt/data/ui_choice`; a small `ui_launcher.sh` is
-the `inittab` `respawn:` target and dispatches to either
-`/mnt/data/toonui` or `/qmf/sbin/qt-gui` based on that file. Companion
-sidecars (`p1bridge`, `quby_bridge`, …) are wrapped by
-`companion_gate.sh` which polls the same file so they idle quietly
-when qt-gui is the active UI.
-
-### Settings → Marketplace
-
-Browse + one-tap install of third-party integrations from
-[freetoon-integrations](https://github.com/Ierlandfan/freetoon-integrations).
-Each integration is a small daemon that publishes data on BoxTalk; toonui
-picks it up via its existing subscribe path, and Settings → Tiles binds any
-installed integration to any home-tile slot.
-
-**Want to build one?** See **[docs/INTEGRATIONS.md](docs/INTEGRATIONS.md)** —
-the developer guide: manifest format, the BoxTalk publish protocol, a minimal
-C daemon, cross-compiling, and how to publish to the catalog.
-
-## Architecture
-
-```
-                        ┌───────────────────┐
-                        │   happ_thermstat  │ ← stock Toon process, untouched
-                        │  (OpenTherm logic)│
-                        └────────┬──────────┘
-                                 │ BoxTalk (XML/NUL-framed over 127.0.0.1:1337)
-                                 │ HTTP    (127.0.0.1:10080/happ_thermstat?…)
-                                 ▼
-┌────────────┐  Quby   ┌───────────────────────────┐    LVGL    ┌────────────┐
-│keteladapter│◀──ttymxc0──▶│        toonui          │──────▶│  /dev/fb0  │
-│  (boiler)  │  bridged    │   (this repo, on /mnt/ │       │  1024×600  │
-└────────────┘  via       │       data/toonui)      │       └────────────┘
-                quby_bridge└──┬─────┬─────┬─────┬───┘
-                              │     │     │     │
-                              │     │     │     └──── PWA HTTP/SSE on :10081
-                              │     │     │
-                              │     │     └──────── MQTT subscriber → home/packages/*
-                              │     │
-                              │     └──── Itho Wifi REST (vent), HWE-P1 (power/gas),
-                              │           HA REST (curtains, notify), Buienradar
-                              │
-                              └──── Boxtalk client: setpoint, program, schedule
-```
-
-`toonui` is the only new long-running process on the device. The stock
-`qt-gui` is removed from `inittab` so it can't fight for the framebuffer;
-`toonui` is added with `respawn` so init brings it back on crash. Config
-lives at `/mnt/data/toonui.cfg`; logs go to `/var/volatile/tmp/toonui.log`.
+The simulator renders any named screen headless, which is handy for previewing layout
+changes without a device.
 
 ## Install
 
-Two paths: grab a pre-built **release** (no toolchain required), or build
-from **source** if you want to hack on the code. Both use the same
-`install.sh` script — it auto-detects which layout it's running in.
+Copy the built `toonui-<target>` binary to a rooted Toon and let the **boot picker** (a
+10-second menu on every boot, also under *Settings → UI mode*) choose between
+`freetoon-lvgl` and the stock `qt-gui`. Rooting and the exact deploy path depend on your
+device; see the [upstream project](https://github.com/Ierlandfan/freetoon-lvgl) and the
+scripts in this repo.
 
-### Prerequisites (both paths)
+## Contributing
 
-* A Linux host with `bash`, `ssh`, `scp`, and `sshpass` on `PATH`
-  (`apt-get install sshpass`).
-* SSH enabled on the Toon — toggle from the stock `hcb_config` menu
-  (Internals → SSH server). Default credentials are `root` / `toon`.
-* `/mnt/data/` is writable on stock firmware; nothing to do there.
-* A reachable MQTT broker is recommended (powers the packages banner
-  and the energy/water logging path).
-* Home Assistant is optional (drives curtains, Life360 location, push
-  notifications) — set the LLAT in `/mnt/data/ha.cfg` after install.
+Issues and PRs are welcome — two GitHub **fork** quirks worth knowing:
 
-### Path A — Use a release (recommended)
+- **Issues** — open them at
+  [`royka1/freetoon-lvgl/issues`](https://github.com/royka1/freetoon-lvgl/issues).
+- **Pull requests** — when you open a PR, GitHub defaults the *base repository* to the
+  upstream `Ierlandfan/freetoon-lvgl`. **Change the "base repository" dropdown to
+  `royka1/freetoon-lvgl` and the base branch to `main`** so your PR targets this fork.
 
-1. Grab the latest tarball from
-   [Releases](https://github.com/Ierlandfan/freetoon-lvgl/releases) — pick
-   `freetoon-lvgl-vX.Y.Z.tar.gz`.
+Development happens on **`main`**. (The `User-friendly-menu` branch is frozen for an
+in-flight PR to upstream — please don't base work on it.)
 
-2. Extract somewhere on your Linux host:
+## Credits & license
 
-   ```bash
-   tar xzf freetoon-lvgl-v0.5.0.tar.gz
-   cd freetoon-lvgl-v0.5.0
-   ```
+Forked from **[Ierlandfan/freetoon-lvgl](https://github.com/Ierlandfan/freetoon-lvgl)** —
+all credit to the original author for the foundation. Built on [LVGL](https://lvgl.io).
 
-   The tarball contains:
-
-   ```
-   toonui                 # LVGL UI binary (ARMv7 hardfloat)
-   p1bridge               # HomeWizard → hcb_rrd bridge
-   quby_bridge            # (optional) Quby-protocol bridge to keteladapter
-   ot_mode_switch.sh      # helper called by the on-device Settings UI
-   pwa/                   # PWA static assets served on :10081
-   install.sh             # the same script as in the repo
-   ```
-
-3. Run the installer against your Toon:
-
-   ```bash
-   TOON_HOST=192.168.3.212 \
-   P1_TOKEN=<HomeWizard v2 bearer token> \
-   VENT_USER=<Itho-Wifi user> VENT_PASS=<…> \
-   ./install.sh
-   ```
-
-   The script scps every binary to `/mnt/data/`, writes
-   `/mnt/data/p1bridge.conf` + `/mnt/data/vent.conf`, upserts the
-   `toon` / `p1br` / `qbri` rows in `/etc/inittab`, then `kill -HUP 1`s
-   init. After ~4 seconds it pgreps the new processes so you can see them
-   running. Idempotent — re-run to upgrade.
-
-4. (Optional) edit `/mnt/data/toonui.cfg` on-device — or open the
-   Settings tile on the LVGL UI — to point at your MQTT broker, set the
-   weather location, dial brightness/idle timeout, etc.
-
-To uninstall: `./install.sh --uninstall` (drops inittab rows, kills
-processes, removes binaries + PWA + configs).
-
-### Path B — Build from source
-
-Use this if you want to modify the UI or the bridges.
-
-1. Clone the repo and grab the LVGL submodule:
-
-   ```bash
-   git clone https://github.com/Ierlandfan/freetoon-lvgl.git
-   cd freetoon-lvgl
-   git submodule update --init --recursive
-   ```
-
-2. Cross-compile for ARMv7 hardfloat. The Makefile expects a Linaro
-   toolchain at `/tmp/qt_rebuild/linaro/` (mirror of
-   `gcc-linaro-7.5.0-2019.12-x86_64_arm-linux-gnueabihf.tar.xz`). Adjust
-   the path in the Makefiles if yours lives elsewhere.
-
-   ```bash
-   make -C lvgl_ui_recovered/src        # produces lvgl_ui_recovered/build/toonui
-   make -C p1bridge                     # produces p1bridge/p1bridge
-   make -C quby_bridge                  # produces quby_bridge/quby_bridge (optional)
-   ```
-
-   Native desktop build with the SDL2 driver is also wired up — useful
-   for previewing UI changes without a Toon on the desk. See
-   `lvgl_ui_recovered/src/Makefile` for the `sdl` target.
-
-3. Deploy with the same script — it picks the in-tree build paths
-   automatically:
-
-   ```bash
-   TOON_HOST=192.168.3.212 P1_TOKEN=… ./install.sh
-   ```
-
-Edit `lvgl_ui_recovered/src/settings.c` defaults or `/mnt/data/toonui.cfg`
-on-device to point at your own IPs.
-
-## Status
-
-The thermostat path is **the** path on this install — `happ_thermstat` →
-`keteladapter` over the Quby protocol, with `quby_bridge` patched to mimic
-the discontinued BoilerAdapter bit-for-bit. OTGW runs in GW=1 (relay) mode
-and forwards the same OpenTherm frames the original BA produced, so the
-boiler's CH/DHW state machines see no change from when Eneco's hardware was
-in the loop. Verified by warming a 17.9 °C room to 20.0 °C unattended.
-
-The repo is opinionated to one physical install (the author's), and parts
-of the integration glue (HA entities, MQTT topic names, Itho user/password
-location) are tuned to that environment. The LVGL UI and the core BoxTalk /
-Quby / OTGW plumbing are portable; the per-integration screens are easy to
-disable.
-
-## Acknowledgements
-
-`freetoon-lvgl` is an independent alternative UI by **Ierlandfan**. Special
-thanks to **Quby / Eneco** for the underlying Toon platform and the BoxTalk /
-Quby protocol structure this UI builds on.
-
-* **OTGW** — Robert van den Breemen's HTTP-firmware fork of the OpenTherm
-  Gateway is the boiler-side workhorse.
-* **Itho Wifi** — Arjen Hiemstra's add-on board + REST API made vent control
-  trivial.
-* **HomeWizard** — open `/api/v1/data` on the HWE-P1 / HWE-WTR.
-* **LVGL** — the embedded UI library this app is built on (MIT, © LVGL Kft).
-* **QR-Code-generator** — © Project Nayuki (MIT); **LodePNG** — © Lode
-  Vandevenne (zlib). Both bundled via LVGL.
-* **Toon community** — the reverse-engineering work scattered across
-  hacktoon and various Tweakers threads that mapped out happ_thermstat,
-  hcb_config and the Quby protocol.
-
-## License
-
-freetoon-lvgl (the UI and integration glue authored in this repository) is
-released under the **MIT License** — see [LICENSE](LICENSE).
-
-This repository contains no Eneco / Quby proprietary code. The stock Toon
-binaries (`happ_thermstat`, `hcb_config`, `keteladapter` firmware, …) remain
-the property of Eneco / Quby; nothing here redistributes or modifies them.
-Bundled third-party components (LVGL, QR-Code-generator, LodePNG) retain their
-own licenses and copyrights as noted in [LICENSE](LICENSE).
+Released under the **MIT License** — © 2026 Ierlandfan and contributors. See
+[`LICENSE`](LICENSE).

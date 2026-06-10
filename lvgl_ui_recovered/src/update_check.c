@@ -1,6 +1,6 @@
 /*
  * Background update checker. Polls
- *   https://api.github.com/repos/Ierlandfan/freetoon-lvgl/releases/latest
+ *   https://api.github.com/repos/royka1/freetoon-lvgl/releases/latest
  * every 6 hours, compares the returned tag_name against BUILD_VERSION,
  * sets g_update_state.* so the home tile can render a "v0.7.x available"
  * banner. Optional release notes (body field) are stored too for the
@@ -33,8 +33,8 @@
  * could run past the timeout on the Toon's slow link and fail the whole check.
  * 10 newest is more than enough to find the highest semver even when GitHub's
  * created_at order is scrambled by a re-created older release. */
-#define RELEASES_API_BETA   "https://api.github.com/repos/Ierlandfan/freetoon-lvgl/releases?per_page=10"
-#define RELEASES_API_STABLE "https://api.github.com/repos/Ierlandfan/freetoon-lvgl/releases/latest"
+#define RELEASES_API_BETA   "https://api.github.com/repos/royka1/freetoon-lvgl/releases?per_page=10"
+#define RELEASES_API_STABLE "https://api.github.com/repos/royka1/freetoon-lvgl/releases/latest"
 
 /* Lightweight connectivity probe used to tell "the GitHub API itself is
  * unreachable / rate-limited / blocked" apart from "the Toon has no internet
@@ -206,7 +206,7 @@ void update_check_now(void) {
              * matching release object out of the array (brittle with nested
              * author/assets objects). */
             snprintf(url, sizeof url,
-                "https://github.com/Ierlandfan/freetoon-lvgl/releases/tag/%s", tag);
+                "https://github.com/royka1/freetoon-lvgl/releases/tag/%s", tag);
             /* notes = the "body" field that follows this release's tag_name. */
             if (best_at) json_extract_str(best_at, "body", notes, sizeof notes);
         }
@@ -240,7 +240,7 @@ void update_install_now(void) {
     notify_show("update", "freetoon", msg);
     fprintf(stderr, "[update] installing now: %s\n", g_update_state.latest_version);
     system("nohup sh -c 'sleep 2; curl -fsSL "
-           "https://raw.githubusercontent.com/Ierlandfan/freetoon-lvgl/main/scripts/toon-selfinstall.sh "
+           "https://raw.githubusercontent.com/royka1/freetoon-lvgl/main/scripts/toon-selfinstall.sh "
            "| sh' >/var/volatile/tmp/selfinstall.log 2>&1 &");
 }
 
