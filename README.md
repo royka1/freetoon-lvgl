@@ -7,8 +7,8 @@ life (boiler, P1 meter, ventilation, weather, packages) and exposes it over a ti
 self-hosted web app so you can also drive the house from your phone.
 
 > **This is a fork of [Ierlandfan/freetoon-lvgl](https://github.com/Ierlandfan/freetoon-lvgl)**
-> (original project © Ierlandfan, MIT). It adds a Toon 1 port, unified Home Assistant +
-> Domoticz + Z-Wave control, an on-device energy-statistics database, and more — see
+> (original project © Ierlandfan, MIT). It adds unified Home Assistant + Domoticz + Z-Wave
+> control, an on-device energy-statistics database, hardware video on Toon 1, and more — see
 > **[What this fork adds](#what-this-fork-adds)** and **[Credits & license](#credits--license)**.
 
 ![Home screen](docs/screenshots/home.png)
@@ -25,8 +25,8 @@ self-hosted web app so you can also drive the house from your phone.
   shows **solar production in green**, and pages back in time with ← / →.
 - **Weather** — Buienradar 5-day + 3-hourly forecast, updated for the 2026 endpoint change
   (the old `data.buienradar.nl` feed went dead).
-- Plus: waste/recycling calendar, MQTT device reads, a live video tile, night-mode dimming,
-  a boot picker (freetoon vs. stock qt-gui), and a multi-language UI.
+- **Video (Toon 1 only)** — a live hardware-decoded video tile (camera / RTSP stream) using
+  the i.MX27 VPU.
 
 ## Why
 
