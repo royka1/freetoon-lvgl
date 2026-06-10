@@ -15,8 +15,6 @@ self-hosted web app so you can also drive the house from your phone.
 
 ## What this fork adds
 
-- **Toon 1 support** — full port to the older i.MX27 hardware (800×480, 16bpp, glibc 2.21),
-  alongside the existing Toon 2 (1024×600, 32bpp). One codebase, `make TARGET=toon1|toon2`.
 - **Unified smart-home devices** — Home Assistant, Domoticz **and** Z-Wave lights / covers /
   switches / scenes in a single **Devices** screen (and optional on-home tiles), driven over
   WebSocket with a searchable entity picker. Manage them from Settings.
