@@ -11,7 +11,7 @@ self-hosted web app so you can also drive the house from your phone.
 > control, an on-device energy-statistics database, hardware video on Toon 1, and more — see
 > **[What this fork adds](#what-this-fork-adds)** and **[Credits & license](#credits--license)**.
 
-![Home screen](docs/screenshots/home.png)
+![freetoon-lvgl on a Toon 1](docs/screenshots.gif)
 
 ## What this fork adds
 
@@ -25,6 +25,8 @@ self-hosted web app so you can also drive the house from your phone.
   shows **solar production in green**, and pages back in time with ← / →.
 - **Video (Toon 1 only)** — a live hardware-decoded video tile (camera / RTSP stream) using
   the i.MX27 VPU.
+- **Reorganized settings** — the settings menu restructured into a clearer, task-grouped
+  layout.
 
 ## Why
 
