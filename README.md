@@ -23,8 +23,6 @@ self-hosted web app so you can also drive the house from your phone.
   **Hour / Day / Week / Month / Year** graph. Works with **any** configured source
   (HA / Domoticz / Z-Wave / built-in P1), falls back to the Toon's RRD for older history,
   shows **solar production in green**, and pages back in time with ← / →.
-- **Weather** — Buienradar 5-day + 3-hourly forecast, updated for the 2026 endpoint change
-  (the old `data.buienradar.nl` feed went dead).
 - **Video (Toon 1 only)** — a live hardware-decoded video tile (camera / RTSP stream) using
   the i.MX27 VPU.
 
