@@ -4521,6 +4521,12 @@ static lv_obj_t * screen_settings_category_create(char cat) {
         TILE(LV_SYMBOL_WIFI,     I18N_MQTT_BROKER,     I18N_MQTT_BROKER_DESC,     open_mqtt_modal);
         TILE(LV_SYMBOL_SETTINGS, I18N_ZWAVE_DEVICES,   I18N_ZWAVE_DEVICES_DESC,   open_zwave);
         TILE(LV_SYMBOL_LIST,     I18N_ITHO_VENT,       I18N_ITHO_VENT_DESC,       open_itho_vent_modal);
+#ifdef TOON1
+        {
+            extern void open_vpu_modal(lv_event_t * e);
+            TILE(LV_SYMBOL_VIDEO,    I18N_VPU,            I18N_VPU_DESC,            open_vpu_modal);
+        }
+#endif
         break;
 
     /* ---- C: Display & Layout ---- */

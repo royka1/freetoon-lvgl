@@ -67,13 +67,24 @@ make TARGET=sim1              # x86 simulator (Toon 1 config, 16bpp)
 The simulator renders any named screen headless, which is handy for previewing layout
 changes without a device.
 
-## Install
+## Install / update
 
-Copy the built `toonui-<target>` binary to a rooted Toon and let the **boot picker** (a
-10-second menu on every boot, also under *Settings → UI mode*) choose between
-`freetoon-lvgl` and the stock `qt-gui`. Rooting and the exact deploy path depend on your
-device; see the [upstream project](https://github.com/Ierlandfan/freetoon-lvgl) and the
-scripts in this repo.
+On a rooted Toon, run the self-installer — it pulls the latest release, picks the right
+binary for your model (`toonui-toon1` for Toon 1, `toonui` for Toon 2) and installs it as
+`/mnt/data/toonui`, refreshes the helper scripts, takes over the GUI's `inittab` row, and
+restarts the UI. Re-running is safe (idempotent):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/royka1/freetoon-lvgl/main/scripts/toon-selfinstall.sh | sh
+```
+
+A 10-second **boot picker** (also under *Settings → UI mode*) then lets you choose
+`freetoon-lvgl` or the stock `qt-gui` on each boot. Rooting depends on your device; see the
+[upstream project](https://github.com/Ierlandfan/freetoon-lvgl).
+
+> Installing the release binary by hand? It must land at `/mnt/data/toonui` (that's what the
+> launcher runs) — rename `toonui-toon1` → `toonui` when you copy it. The self-installer does
+> this for you.
 
 ## Contributing
 

@@ -122,7 +122,7 @@ APP_SRC       := $(ENTRY) $(GLIBC_SRC) boxtalk.c ui_stack.c screen_home.c screen
                  notify.c healthcheck.c pwa_server.c packages.c mqtt_client.c \
                  schedule.c icons.c backlight.c settings.c bootpick.c update_check.c \
                  tile_slots.c client_link.c news.c doorbell.c calendar.c layout.c \
-                 toon1_touch.c pin_modal.c video.c ui_cmd.c gifdec_vendored.c \
+                 toon1_touch.c pin_modal.c video.c screen_vpu.c ui_cmd.c gifdec_vendored.c \
                  lv_font_montserrat_96_custom.c lv_font_montserrat_64_custom.c
 ALL_SRC       := $(APP_SRC) $(LVGL_SRC) $(LVDRV_SRC)
 OBJ           := $(patsubst %.c,$(BUILDDIR)/%.o,$(ALL_SRC))
@@ -165,9 +165,12 @@ abi-check: $(BUILDDIR)/$(OUT)
 
 # Standalone VNC touch-injection bridge (no LVGL deps). Shipped alongside
 # toonui so VNC gives full control on the multi-touch screen.
-$(BUILDDIR)/fbvnc_input: fbvnc_input.c
+$(BUILDDIR)/fbvnc_input: fbvnc_input.c $(GLIBC_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) --sysroot=$(SYSROOT) -O2 -Wall -Wextra -o $@ $<
+	$(CC) $(SYSROOTFLAG) $(ARCHFLAGS) $(TARGET_DEF) $(GLIBC_CFLAGS) -O2 -Wall -Wextra \
+	      -o $@ fbvnc_input.c $(GLIBC_SRC) $(GLIBC_LDFLAGS)
+	$(CROSS)objcopy --remove-section .note.ABI-tag $@
+	$(if $(GLIBC_SRC),patchelf --add-needed libpthread.so.0 $@)
 	$(CROSS)strip $@
 
 # Standalone HA-doorbell HTTP shim (Toon 1): POST /show /hide on :8765 ->

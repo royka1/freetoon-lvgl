@@ -110,30 +110,32 @@ const lv_img_dsc_t * weather_icon_for(const char * letter) {
     switch (letter[0]) {
         case 'a':                                       /* zonnig / helder */
             return night ? moon_phase_icon(40) : &icon_wx_sun;
-        case 'b':                                       /* half bewolkt */
-        case 'j':                                       /* half bewolkt nacht */
+        case 'b':                                       /* licht bewolkt */
+        case 'j':                                       /* half bewolkt */
             return night ? &icon_wx_cloud : &icon_wx_sun_cloud;
-        case 'c':                                       /* half bewolkt + regen */
-        case 'f':                                       /* afwisselend bewolkt */
-        case 'l':                                       /* mist + lichte regen */
-            return &icon_wx_rain_light;
-        case 'd':                                       /* overwegend bewolkt */
-        case 'r':                                       /* zwaar bewolkt */
+        case 'c':                                       /* zwaar bewolkt */
+        case 'w':                                       /* veel bewolking */
             return &icon_wx_cloud;
-        case 'e':                                       /* bewolkt + regen */
-        case 'h':                                       /* zware buien */
-        case 'q':                                       /* regen */
-            return &icon_wx_rain_heavy;
-        case 'g':                                       /* onweer */
-        case 'm':                                       /* onweerbuien */
-            return &icon_wx_thunder;
-        case 'n':                                       /* sneeuw */
-        case 'p':                                       /* sneeuwbuien */
-        case 'u':                                       /* sneeuw / hagel */
-            return &icon_wx_snow;
+        case 'd':                                       /* nevelig */
+        case 'n':                                       /* mistig */
         case 'k':                                       /* mist */
         case 'i':                                       /* heiig */
             return &icon_wx_fog;
+        case 'f':                                       /* wisselend bewolkt + buien */
+        case 'm':                                       /* lichte regen */
+        case 'r':                                       /* buien */
+        case 'l':                                       /* mist + motregen */
+            return &icon_wx_rain_light;
+        case 'g':                                       /* onweer */
+        case 'h':                                       /* zware onweersbuien */
+            return &icon_wx_thunder;
+        case 'e':                                       /* regen */
+        case 'q':                                       /* zware regen */
+            return &icon_wx_rain_heavy;
+        case 'p':                                       /* sneeuwbuien */
+        case 's':                                       /* sneeuw */
+        case 'u':                                       /* sneeuw / hagel */
+            return &icon_wx_snow;
         default:
             return &icon_wx_cloud;
     }
@@ -145,12 +147,12 @@ const lv_img_dsc_t * weather_icon_for_lg(const char * letter) {
     switch (letter[0]) {
         case 'a': return night ? moon_phase_icon(80) : &icon_wx_sun_lg;
         case 'b': case 'j': return night ? &icon_wx_cloud_lg : &icon_wx_sun_cloud_lg;
-        case 'c': case 'f': case 'l': return &icon_wx_rain_light_lg;
-        case 'd': case 'r': return &icon_wx_cloud_lg;
-        case 'e': case 'h': case 'q': return &icon_wx_rain_heavy_lg;
-        case 'g': case 'm': return &icon_wx_thunder_lg;
-        case 'n': case 'p': case 'u': return &icon_wx_snow_lg;
-        case 'k': case 'i': return &icon_wx_fog_lg;
+        case 'c': case 'w': return &icon_wx_cloud_lg;
+        case 'd': case 'n': case 'k': case 'i': return &icon_wx_fog_lg;
+        case 'f': case 'm': case 'r': case 'l': return &icon_wx_rain_light_lg;
+        case 'g': case 'h': return &icon_wx_thunder_lg;
+        case 'e': case 'q': return &icon_wx_rain_heavy_lg;
+        case 'p': case 's': case 'u': return &icon_wx_snow_lg;
         default:  return &icon_wx_cloud_lg;
     }
 }

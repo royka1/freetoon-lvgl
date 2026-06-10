@@ -2078,10 +2078,18 @@ static void refresh_cb(lv_timer_t * t) {
     }
 
     /* Forecast band: honour settings.forecast_mode (auto / forced hourly /
-       forced daily). Forced-hourly still falls back to daily if the hourly
-       fetch has nothing yet. */
-    int show_hourly = settings.forecast_mode != FORECAST_DAILY
-                      && weather_state.hour_count > 0;
+       forced daily). Each mode falls back to the other data source when
+       its preferred one is empty. */
+    int show_hourly = weather_state.hour_count > 0
+                      && (settings.forecast_mode != FORECAST_DAILY
+                          || weather_state.day_count == 0);
+    { static int last_day = -1, last_hour = -1;
+      if (weather_state.day_count != last_day || weather_state.hour_count != last_hour) {
+        last_day = weather_state.day_count; last_hour = weather_state.hour_count;
+        fprintf(stderr, "[home] forecast: connected=%d day_count=%d hour_count=%d show_hourly=%d fc_mode=%d\n",
+                weather_state.connected, weather_state.day_count, weather_state.hour_count,
+                show_hourly, settings.forecast_mode);
+      } }
     if (show_hourly) {
         /* The "Medemblik - X.X C now" header above the strip already shows
          * the current hour's value, so start at index 1 (the next 3-hour

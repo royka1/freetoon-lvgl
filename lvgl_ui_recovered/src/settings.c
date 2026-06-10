@@ -105,8 +105,13 @@ settings_t settings = {
     .video_src_h         = 480,
     .video_x             = -1,
     .video_y             = -1,
-    .video_rtp           = 0,
+    .video_rtp           = 5000,
     .video_overlay       = 0,
+    .video_rtsp          = "",
+    .video_codec         = 0,
+    .video_prebuffer     = 0,
+    .video_deblock       = 0,
+    .video_warm          = 1,
     .p1_elec_host        = "",
     .p1_water_host       = "",
     .vent_host           = "",
@@ -332,6 +337,11 @@ void settings_load(void) {
         else if (strcmp(k, "video_y")          == 0 || strcmp(k, "camera_y")        == 0) settings.video_y = iv;
         else if (strcmp(k, "video_rtp")        == 0 || strcmp(k, "camera_rtp")      == 0) settings.video_rtp = (iv < 0 || iv > 65535) ? 0 : iv;
         else if (strcmp(k, "video_overlay")    == 0 || strcmp(k, "camera_overlay")  == 0) settings.video_overlay = (iv ? 1 : 0);
+        else if (strcmp(k, "video_rtsp")      == 0) snprintf(settings.video_rtsp, sizeof settings.video_rtsp, "%s", v);
+        else if (strcmp(k, "video_codec")     == 0) settings.video_codec = (iv == 1) ? 1 : 0;
+        else if (strcmp(k, "video_prebuffer") == 0) settings.video_prebuffer = (iv < 0 || iv > 2048) ? 0 : iv;
+        else if (strcmp(k, "video_deblock")   == 0) settings.video_deblock = (iv ? 1 : 0);
+        else if (strcmp(k, "video_warm")     == 0) settings.video_warm = (iv ? 1 : 0);
         else if (strcmp(k, "doorbell_stream_url") == 0) snprintf(settings.doorbell_stream_url, sizeof settings.doorbell_stream_url, "%s", v);
         else if (strcmp(k, "p1_elec_host")     == 0) snprintf(settings.p1_elec_host, sizeof settings.p1_elec_host, "%s", v);
         else if (strcmp(k, "p1_water_host")    == 0) snprintf(settings.p1_water_host, sizeof settings.p1_water_host, "%s", v);
@@ -673,6 +683,13 @@ void settings_save(void) {
     fprintf(f, "video_y=%d\n",         settings.video_y);
     fprintf(f, "video_rtp=%d\n",       settings.video_rtp);
     fprintf(f, "video_overlay=%d\n",   settings.video_overlay);
+    if (settings.video_rtsp[0])
+        fprintf(f, "video_rtsp=%s\n",  settings.video_rtsp);
+    fprintf(f, "video_codec=%d\n",     settings.video_codec);
+    if (settings.video_prebuffer)
+        fprintf(f, "video_prebuffer=%d\n", settings.video_prebuffer);
+    fprintf(f, "video_deblock=%d\n",   settings.video_deblock);
+    fprintf(f, "video_warm=%d\n",     settings.video_warm);
     fprintf(f, "doorbell_stream_url=%s\n", settings.doorbell_stream_url);
     fprintf(f, "p1_elec_host=%s\n", settings.p1_elec_host);
     fprintf(f, "p1_water_host=%s\n", settings.p1_water_host);

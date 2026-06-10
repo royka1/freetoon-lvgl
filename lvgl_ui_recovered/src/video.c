@@ -67,6 +67,11 @@ static int          s_spawn_x = -1, s_spawn_y = -1;
 static int          s_spawn_w = -1, s_spawn_h = -1;
 static int          s_spawn_rtp = -1;
 static int          s_spawn_overlay = -1;
+static char         s_spawn_rtsp[256];
+static int          s_spawn_codec = -1;
+static int          s_spawn_prebuffer = -1;
+static int          s_spawn_deblock = -1;
+static int          s_spawn_warm = -1;
 
 static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -105,19 +110,26 @@ static int spawn_warm(void)
 
     pid_t p = fork();
     if (p == 0) {
-        /* Build argv: --warm [--overlay] --rect X Y W H {--rtp PORT | TCPPORT}.
-         * --overlay makes vpu_stream render to the fb1 graphic-window
-         * (DISP0 FG) plane instead of into fb0 -- the LCDC composites the
-         * video over the LVGL UI in hardware, so no fbdev cutout is needed. */
-        char *av[16];
+        char *av[24];
         int n = 0;
         setpgid(0, 0);
         av[n++] = "vpu_stream";
-        av[n++] = "--warm";
+        if (settings.video_warm) av[n++] = "--warm";
         if (settings.video_overlay) av[n++] = "--overlay";
+        if (settings.video_codec == 1) { av[n++] = "--codec"; av[n++] = "h264"; }
+        if (settings.video_deblock) av[n++] = "--pp-deblock";
+        if (settings.video_prebuffer > 0) {
+            char pb[12]; snprintf(pb, sizeof pb, "%d", settings.video_prebuffer);
+            av[n++] = "--prebuffer"; av[n++] = pb;
+        }
+        if (settings.video_rtsp[0]) {
+            av[n++] = "--rtsp"; av[n++] = settings.video_rtsp;
+        } else if (settings.video_rtp > 0) {
+            av[n++] = "--rtp"; av[n++] = port;
+        } else {
+            av[n++] = DEFAULT_PORT_STR;
+        }
         av[n++] = "--rect"; av[n++] = xs; av[n++] = ys; av[n++] = ws; av[n++] = hs;
-        if (settings.video_rtp > 0) { av[n++] = "--rtp"; av[n++] = port; }
-        else                         { av[n++] = DEFAULT_PORT_STR; }
         av[n] = NULL;
         execv(VPU_STREAM_BIN, av);
         _exit(127);
@@ -130,11 +142,21 @@ static int spawn_warm(void)
     s_spawn_w = s_w; s_spawn_h = s_h;
     s_spawn_rtp = settings.video_rtp;
     s_spawn_overlay = settings.video_overlay;
-    printf("[video] warm-spawned vpu_stream pid=%d rect=(%d,%d)+%dx%d %s=%d%s\n",
+    snprintf(s_spawn_rtsp, sizeof s_spawn_rtsp, "%s", settings.video_rtsp);
+    s_spawn_codec = settings.video_codec;
+    s_spawn_prebuffer = settings.video_prebuffer;
+    s_spawn_deblock = settings.video_deblock;
+    s_spawn_warm = settings.video_warm;
+    printf("[video] spawned vpu_stream pid=%d rect=(%d,%d)+%dx%d %s=%d%s%s%s%s\n",
            s_pid, s_x, s_y, s_w, s_h,
+           settings.video_rtsp[0] ? "rtsp" :
            settings.video_rtp > 0 ? "rtp" : "tcp",
+           settings.video_rtsp[0] ? 0 :
            settings.video_rtp > 0 ? settings.video_rtp : atoi(DEFAULT_PORT_STR),
-           settings.video_overlay ? " overlay" : "");
+           settings.video_overlay ? " overlay" : "",
+           settings.video_codec ? " h264" : "",
+           settings.video_deblock ? " deblock" : "",
+           settings.video_warm ? " warm" : "");
     return 0;
 }
 
@@ -207,8 +229,13 @@ void video_open(void)
     if (s_pid > 0 && (s_x != s_spawn_x || s_y != s_spawn_y ||
                       s_w != s_spawn_w || s_h != s_spawn_h ||
                       settings.video_rtp != s_spawn_rtp ||
-                      settings.video_overlay != s_spawn_overlay)) {
-        printf("[video] settings changed (%d,%d)+%dx%d rtp=%d ov=%d -> (%d,%d)+%dx%d rtp=%d ov=%d; respawning warm child\n",
+                      settings.video_overlay != s_spawn_overlay ||
+                      strcmp(settings.video_rtsp, s_spawn_rtsp) != 0 ||
+                      settings.video_codec != s_spawn_codec ||
+                      settings.video_prebuffer != s_spawn_prebuffer ||
+                      settings.video_deblock != s_spawn_deblock ||
+                      settings.video_warm != s_spawn_warm)) {
+        printf("[video] settings changed (%d,%d)+%dx%d rtp=%d ov=%d -> (%d,%d)+%dx%d rtp=%d ov=%d; respawning child\n",
                s_spawn_x, s_spawn_y, s_spawn_w, s_spawn_h, s_spawn_rtp, s_spawn_overlay,
                s_x, s_y, s_w, s_h, settings.video_rtp, settings.video_overlay);
         kill(s_pid, SIGTERM);

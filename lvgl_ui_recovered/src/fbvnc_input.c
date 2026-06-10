@@ -23,9 +23,15 @@
 #include <linux/input.h>
 #include <time.h>
 
+#ifdef TOON1
+#define TS_DEV "/dev/input/event0"
+#define SCR_W  800
+#define SCR_H  480
+#else
 #define TS_DEV "/dev/input/event1"
 #define SCR_W  1024
 #define SCR_H  600
+#endif
 
 static int ts_fd = -1;
 
@@ -57,8 +63,10 @@ int main(void) {
         if (sscanf(line, "Pointer %d %d %d %d", &cid, &x, &y, &mask) != 4)
             continue;                       /* Keysym / other — ignore */
 
-        if (x < 0) x = 0; if (x >= SCR_W) x = SCR_W - 1;
-        if (y < 0) y = 0; if (y >= SCR_H) y = SCR_H - 1;
+        if (x < 0) x = 0;
+        if (x >= SCR_W) x = SCR_W - 1;
+        if (y < 0) y = 0;
+        if (y >= SCR_H) y = SCR_H - 1;
 
         int down = (mask & 1) ? 1 : 0;
 
