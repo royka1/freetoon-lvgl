@@ -1,10 +1,16 @@
 /*
- * Buienradar JSON poller. Fetches https://data.buienradar.nl/2.0/feed/json
- * every 15 minutes, parses out the station nearest to the user (id 6249 by
- * default) + the 5-day forecast.
+ * Buienradar JSON poller.
  *
- * No JSON library: we use small strstr-based extractors. Buienradar's
- * shape is stable so this is safe.
+ * As of 2026, data.buienradar.nl/2.0/feed/json is broken (returns a .NET
+ * type-name stub instead of JSON).  Everything — current weather, 5‑day
+ * forecast, and 3‑hourly slots — is now derived from the one endpoint that
+ * still works: forecast.buienradar.nl/2.0/forecast/<geonames-id>.
+ *
+ * The old daily endpoint is still fetched best-effort for the radar-image
+ * URL and the weather-report text, but a failure there no longer knocks the
+ * "connected" flag down; the forecast endpoint is the source of truth.
+ *
+ * No JSON library: we use small strstr-based extractors.
  */
 #include "weather.h"
 #include "http.h"
@@ -57,6 +63,35 @@ static int js_str(const char * begin, const char * end, const char * key,
 
 /* Compute Dutch short-day label "ma 13-5" from a "2026-05-14T00:00:00" string. */
 static const char * dutch_dow[] = {"zo","ma","di","wo","do","vr","za"};
+
+/* Map a buienradar iconcode ("a","aa","b","r",…) to a short Dutch description.
+   Used when the forecast endpoint (which doesn't provide human-readable
+   weatherdescription) is the primary data source. */
+static const char * iconcode_to_desc(const char * code) {
+    if (!code || !code[0]) return "";
+    if (!strcmp(code, "aa")) return "Helder";
+    if (!strcmp(code, "bb")) return "Licht bewolkt";
+    if (!strcmp(code, "cc")) return "Zwaar bewolkt";
+    if (!strcmp(code, "ff")) return "Buien";
+    if (!strcmp(code, "jj")) return "Half bewolkt";
+    if (!strcmp(code, "mm")) return "Lichte regen";
+    if (!strcmp(code, "a"))  return "Zonnig";
+    if (!strcmp(code, "b"))  return "Licht bewolkt";
+    if (!strcmp(code, "c"))  return "Zwaar bewolkt";
+    if (!strcmp(code, "d"))  return "Nevelig";
+    if (!strcmp(code, "f"))  return "Buien";
+    if (!strcmp(code, "g"))  return "Onweer";
+    if (!strcmp(code, "h"))  return "Zware onweersbuien";
+    if (!strcmp(code, "j"))  return "Half bewolkt";
+    if (!strcmp(code, "m"))  return "Lichte regen";
+    if (!strcmp(code, "n"))  return "Mist";
+    if (!strcmp(code, "q"))  return "Zware regen";
+    if (!strcmp(code, "r"))  return "Buien";
+    if (!strcmp(code, "s"))  return "Sneeuw";
+    if (!strcmp(code, "w"))  return "Veel bewolking";
+    return "";
+}
+
 static void format_day_label(const char * iso_date, char * out, size_t outsz) {
     if (strlen(iso_date) < 10) { snprintf(out, outsz, "?"); return; }
     int y = atoi(iso_date);
@@ -245,6 +280,114 @@ static int parse_buienradar_hourly(const char * body) {
     return picked > 0 ? 0 : -1;
 }
 
+/* Parse day-level forecast fields from the forecast endpoint JSON (the same
+ * body that parse_buienradar_hourly() reads).  Each item in the "days" array
+ * has top-level scalar keys — mintemperature, maxtemperature, winddirection,
+ * beaufort, iconcode, precipitation — before the nested "hours":[…] array.
+ * We extract up to WEATHER_FORECAST_DAYS entries and populate
+ * weather_state.days[]. */
+static void parse_forecast_daily(const char * body)
+{
+    weather_state.day_count = 0;
+    const char * days_arr = strstr(body, "\"days\":[");
+    if (!days_arr) return;
+    const char * body_end = body + strlen(body);
+    const char * walk = days_arr + 7;
+
+    for (int i = 0; i < WEATHER_FORECAST_DAYS; i++) {
+        /* Each day object starts with "date":"YYYY-MM-DDT…". */
+        const char * dk = strstr(walk, "\"date\":\"");
+        if (!dk) break;
+        const char * ds = dk + 8;
+        const char * de = strchr(ds, '"');
+        if (!de) break;
+        char iso[32];
+        size_t n = (size_t)(de - ds);
+        if (n >= sizeof(iso)) n = sizeof(iso) - 1;
+        memcpy(iso, ds, n); iso[n] = 0;
+
+        /* The day-LEVEL scalars (the real daily min/max, rain %, icon, wind)
+         * sit AFTER this day's "hours":[…] array — before it the only
+         * mintemperature/etc. belong to the morning/afternoon/… sub-objects.
+         * Skip the hours array with a balanced bracket count: hours_start+9 is
+         * the first char INSIDE the array, so depth starts at 1 for its '['.
+         * (The old +8 pointed AT the '[' and re-counted it as depth 2, then
+         * over-ran a ']' and blew past every remaining day — leaving only the
+         * first one.) The landing point is also where the next day's "date"
+         * lives, so it doubles as the loop advance. */
+        const char * after = de;
+        const char * hours_start = strstr(de, "\"hours\":[");
+        if (hours_start && hours_start < body_end) {
+            const char * p = hours_start + 9;
+            int depth = 1;
+            while (depth > 0 && *p) {
+                if (*p == '[') depth++;
+                else if (*p == ']') depth--;
+                p++;
+            }
+            after = p;
+        }
+
+        weather_day_t * dst = &weather_state.days[i];
+        format_day_label(iso, dst->day, sizeof(dst->day));
+        dst->min_temp    = (float)js_num(after, body_end, "mintemperature", 0);
+        dst->max_temp    = (float)js_num(after, body_end, "maxtemperature", 0);
+        dst->rain_chance = (int)js_num(after, body_end, "precipitation", 0);
+        dst->wind_bft    = (int)js_num(after, body_end, "beaufort", 0);
+        js_str(after, body_end, "winddirection", dst->wind_dir, sizeof(dst->wind_dir));
+        for (int k = 0; dst->wind_dir[k]; k++)
+            if (dst->wind_dir[k] >= 'a' && dst->wind_dir[k] <= 'z')
+                dst->wind_dir[k] -= 32;
+        js_str(after, body_end, "iconcode", dst->icon, sizeof(dst->icon));
+        snprintf(dst->desc, sizeof(dst->desc), "%s", iconcode_to_desc(dst->icon));
+        weather_state.day_count = i + 1;
+
+        walk = after;
+    }
+}
+
+/* Parse current weather from the first Hour-typed entry of the first day in
+ * the forecast JSON.  The forecast endpoint doesn't have a dedicated "current
+ * conditions" block, but the first hourly slot is typically 1-2 hours ahead
+ * and gives a reasonable approximation. */
+static void parse_forecast_current(const char * body)
+{
+    const char * p = strstr(body, "\"hours\":[");
+    if (!p) return;
+    /* Scan through "hours":[ … ] for the first "timetype":"Hour" entry. */
+    while (1) {
+        const char * dt = strstr(p, "\"datetime\":\"");
+        if (!dt) return;
+        dt += 12;
+        const char * dt_end = strchr(dt, '"');
+        if (!dt_end) return;
+
+        const char * slot_end = strstr(dt_end, "\"datetime\":\"");
+        if (!slot_end) slot_end = body + strlen(body);
+
+        char timetype[16] = {0};
+        js_str(dt_end, slot_end, "timetype", timetype, sizeof timetype);
+        if (strcmp(timetype, "Hour") == 0) {
+            weather_state.current_temp = (float)js_num(dt_end, slot_end, "temperature", 0);
+            weather_state.feel_temp    = (float)js_num(dt_end, slot_end, "feeltemperature", 0);
+            char ic[16];
+            if (js_str(dt_end, slot_end, "iconcode", ic, sizeof ic)) {
+                size_t ilen = strlen(ic);
+                if (ilen >= sizeof(weather_state.current_icon))
+                    ilen = sizeof(weather_state.current_icon) - 1;
+                memcpy(weather_state.current_icon, ic, ilen);
+                weather_state.current_icon[ilen] = 0;
+                /* Derive a readable description from the icon code. */
+                const char * desc = iconcode_to_desc(ic);
+                snprintf(weather_state.current_desc,
+                         sizeof(weather_state.current_desc), "%s", desc);
+            }
+            return;
+        }
+        p = slot_end;  /* try the next slot */
+    }
+}
+
 static int fetch_buienradar_hourly(void) {
     int id = settings.weather_location_id;
     if (id <= 0) return -1;
@@ -274,7 +417,14 @@ static int fetch_buienradar_hourly(void) {
             return -1;
         }
     }
-    return parse_buienradar_hourly(body);
+    /* Parse everything we can from this one response.  Order matters:
+     * hourly first (it advances through "hours" arrays), then daily
+     * (re-scans for day-level keys), then current (picks the first
+     * Hour slot). */
+    int h_ok = parse_buienradar_hourly(body);
+    parse_forecast_daily(body);
+    parse_forecast_current(body);
+    return h_ok;
 }
 
 /* Fetches the radar PNG to disk via curl. We don't write our own libcurl
@@ -329,37 +479,52 @@ int weather_geocode(const char * city) {
 
 static void * wx_thread(void * arg) {
     (void)arg;
-    static char body[64 * 1024];
+    static char body[128 * 1024];
     int radar_tick = 0;
     while (1) {
+        /* Primary data source — the forecast endpoint provides everything:
+         * current weather, 5‑day forecast, and 3‑hourly slots. */
+        int fc_ok = fetch_buienradar_hourly();
+        if (fc_ok == 0) {
+            weather_state.connected = 1;
+            fprintf(stderr, "[wx] forecast: %s %.1fC, %d-day, %d hourly slots\n",
+                    weather_state.current_desc,
+                    weather_state.current_temp, weather_state.day_count,
+                    weather_state.hour_count);
+        } else {
+            weather_state.connected = 0;
+            fprintf(stderr, "[wx] forecast fetch/parse failed\n");
+        }
+
+        /* Secondary: the old daily feed — tried only for the radar-image
+         * URL and the weather-report text.  A failure here is harmless;
+         * the forecast endpoint is the source of truth.  If the endpoint
+         * comes back (buienradar reverts/fixes their API), we silently
+         * regain radar + report. */
         if (http_fetch("https://data.buienradar.nl/2.0/feed/json",
                        body, sizeof(body)) == 0) {
             if (parse_buienradar(body) == 0) {
-                weather_state.connected = 1;
-                fprintf(stderr, "[wx] %s %.1fC, %d-day forecast\n",
-                        weather_state.current_desc,
-                        weather_state.current_temp, weather_state.day_count);
+                fprintf(stderr, "[wx] daily feed OK — radar + report restored "
+                        "(body %zu KB)\n", strlen(body) / 1024);
+            } else {
+                fprintf(stderr, "[wx] daily feed unparseable "
+                        "(body %zu KB, starts '%.60s')\n",
+                        strlen(body) / 1024, body);
             }
         } else {
-            weather_state.connected = 0;
-            fprintf(stderr, "[wx] fetch failed\n");
+            fprintf(stderr, "[wx] daily feed fetch failed\n");
         }
-        /* Pull the 3-hourly forecast for the configured location id.
-           Independent of the daily feed — a failure here shouldn't take
-           the "connected" flag down. */
-        if (fetch_buienradar_hourly() == 0)
-            fprintf(stderr, "[wx] hourly forecast: %d slots\n",
-                    weather_state.hour_count);
-        else
-            fprintf(stderr, "[wx] hourly fetch failed\n");
-        /* Fetch the radar image every 5 minutes (3 ticks of 15-min loop is
-           too slow; we do an inner sleep loop instead). */
-        for (int i = 0; i < 3; i++) {
-            if (fetch_radar_image() == 0)
-                fprintf(stderr, "[wx] radar refreshed (tick %d)\n", radar_tick++);
-            else
-                fprintf(stderr, "[wx] radar fetch failed\n");
-            sleep(5 * 60);
+
+        if (weather_state.connected) {
+            for (int i = 0; i < 3; i++) {
+                if (fetch_radar_image() == 0)
+                    fprintf(stderr, "[wx] radar refreshed (tick %d)\n", radar_tick++);
+                else
+                    fprintf(stderr, "[wx] radar fetch failed\n");
+                sleep(5 * 60);
+            }
+        } else {
+            sleep(60);
         }
     }
     return NULL;
