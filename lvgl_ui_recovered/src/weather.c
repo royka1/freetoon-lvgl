@@ -388,6 +388,35 @@ static void parse_forecast_current(const char * body)
     }
 }
 
+/* The forecast endpoint carries no human-readable weather report, and the old
+ * data.buienradar.nl feed that did is dead — so the forecast screen's report
+ * panel next to the radar was blank. Build a short report from today's
+ * (days[0]) + tomorrow's (days[1]) parsed forecast. If the old feed ever comes
+ * back, parse_buienradar() runs afterwards and overwrites this with the real
+ * KNMI text. */
+static void synth_weatherreport(void) {
+    if (weather_state.day_count <= 0) return;
+    const weather_day_t * d0 = &weather_state.days[0];
+    snprintf(weather_state.weatherreport_title,
+             sizeof weather_state.weatherreport_title,
+             "Vandaag: %s", d0->desc[0] ? d0->desc : "wisselend");
+    int n = snprintf(weather_state.weatherreport_text,
+             sizeof weather_state.weatherreport_text,
+             "%s. %d\xc2\xb0 tot %d\xc2\xb0, wind %s %d Bft, %d%% kans op neerslag.",
+             d0->desc[0] ? d0->desc : "Wisselend weer",
+             (int)(d0->min_temp + 0.5f), (int)(d0->max_temp + 0.5f),
+             d0->wind_dir[0] ? d0->wind_dir : "?", d0->wind_bft, d0->rain_chance);
+    if (weather_state.day_count > 1 && n > 0 &&
+        (size_t)n < sizeof weather_state.weatherreport_text) {
+        const weather_day_t * d1 = &weather_state.days[1];
+        snprintf(weather_state.weatherreport_text + n,
+                 sizeof weather_state.weatherreport_text - (size_t)n,
+                 "\n\nMorgen: %s, %d\xc2\xb0 tot %d\xc2\xb0.",
+                 d1->desc[0] ? d1->desc : "wisselend",
+                 (int)(d1->min_temp + 0.5f), (int)(d1->max_temp + 0.5f));
+    }
+}
+
 static int fetch_buienradar_hourly(void) {
     int id = settings.weather_location_id;
     if (id <= 0) return -1;
@@ -424,6 +453,7 @@ static int fetch_buienradar_hourly(void) {
     int h_ok = parse_buienradar_hourly(body);
     parse_forecast_daily(body);
     parse_forecast_current(body);
+    synth_weatherreport();   /* fill the report panel from the parsed forecast */
     return h_ok;
 }
 
