@@ -72,7 +72,7 @@ static lv_obj_t * g_lbl_bin;
 static lv_obj_t * g_ta_w, * g_ta_h, * g_ta_rtp, * g_ta_rtsp;
 static lv_obj_t * g_ta_prebuf, * g_ta_x, * g_ta_y;
 static lv_obj_t * g_sw_codec, * g_lbl_codec_val;
-static lv_obj_t * g_lbl_mode_val;            /* "RTP" / "RTSP" label next to mode switch */
+static lv_obj_t * g_dd_mode;                  /* TCP/RTP/RTSP dropdown */
 static lv_obj_t * g_lbl_rtp, * g_lbl_rtsp;   /* labels for mode-dependent rows */
 static lv_obj_t * g_lbl_warm_url1, * g_lbl_warm_url2;  /* doorbell hint URLs */
 
@@ -213,15 +213,14 @@ static void on_vpu_save(lv_event_t * e) {
         settings.video_src_w = atoi(s);
     s = lv_textarea_get_text(g_ta_h);   if (s && s[0])
         settings.video_src_h = atoi(s);
-    /* Mode: if RTSP selected, keep the URL; else clear it so video.c
-     * uses --rtp.  RTP port is always saved even when hidden. */
+    settings.video_mode = lv_dropdown_get_selected(g_dd_mode);
     s = lv_textarea_get_text(g_ta_rtp); if (s && s[0])
         settings.video_rtp = atoi(s);
     s = lv_textarea_get_text(g_ta_rtsp);
-    if (!lv_obj_has_flag(g_ta_rtsp, LV_OBJ_FLAG_HIDDEN) && s && s[0])
+    if (settings.video_mode == 2 && s && s[0])
         snprintf(settings.video_rtsp, sizeof settings.video_rtsp, "%s", s);
-    else if (lv_obj_has_flag(g_ta_rtsp, LV_OBJ_FLAG_HIDDEN))
-        settings.video_rtsp[0] = '\0';   /* RTP mode — clear RTSP */
+    else if (settings.video_mode != 2)
+        settings.video_rtsp[0] = '\0';
     s = lv_textarea_get_text(g_ta_prebuf); if (s && s[0])
         settings.video_prebuffer = atoi(s);
     settings.video_codec = lv_obj_has_state(g_sw_codec, LV_STATE_CHECKED) ? 1 : 0;
@@ -260,20 +259,26 @@ static void on_sw_codec(lv_event_t * e) {
     settings_save();
 }
 
-static void on_sw_mode(lv_event_t * e) {
-    int rtsp = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
-    lv_label_set_text(g_lbl_mode_val, rtsp ? TR(I18N_VPU_RTSP) : TR(I18N_VPU_RTP));
-    if (rtsp) {
+static void update_mode_visibility(int mode) {
+    if (mode == 1) {
+        lv_obj_clear_flag(g_ta_rtp, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(g_lbl_rtp, LV_OBJ_FLAG_HIDDEN);
+    } else {
         lv_obj_add_flag(g_ta_rtp, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(g_lbl_rtp, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (mode == 2) {
         lv_obj_clear_flag(g_ta_rtsp, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(g_lbl_rtsp, LV_OBJ_FLAG_HIDDEN);
     } else {
-        lv_obj_clear_flag(g_ta_rtp, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(g_lbl_rtp, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(g_ta_rtsp, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(g_lbl_rtsp, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+static void on_dd_mode(lv_event_t * e) {
+    int sel = lv_dropdown_get_selected(lv_event_get_target(e));
+    update_mode_visibility(sel);
 }
 
 static void on_sw_warm(lv_event_t * e) {
@@ -579,19 +584,33 @@ void open_vpu_modal(lv_event_t * e) {
             }
         }
 
-        /* Mode: RTP / RTSP switch */
+        /* Mode: TCP / RTP / RTSP dropdown */
         {
-            int rtsp_mode = (settings.video_rtsp[0] != '\0');
-            lv_obj_t * sw;
-            y = row_sw_label(scr, y, TR(I18N_VPU_MODE), &sw, &g_lbl_mode_val,
-                             rtsp_mode, TR(I18N_VPU_RTP), TR(I18N_VPU_RTSP),
-                             on_sw_mode);
+            lv_obj_t * lbl = lv_label_create(scr);
+            lv_label_set_text(lbl, TR(I18N_VPU_MODE));
+            lv_obj_set_style_text_color(lbl, lv_color_hex(0xe0e0e0), 0);
+            lv_obj_set_style_text_font(lbl, SF(20), 0);
+            lv_obj_align(lbl, LV_ALIGN_TOP_LEFT, SX(LABEL_X),
+                         SY(y) + (SY(ROW_H) - SY(24)) / 2);
 
-            /* Create both mode-dependent rows at the same y.
-             * Only the active one is visible. */
+            char dd_opts[128];
+            snprintf(dd_opts, sizeof dd_opts, "%s %s\n%s\n%s",
+                     TR(I18N_VPU_TCP), TR(I18N_VPU_RECOMMENDED),
+                     TR(I18N_VPU_RTP), TR(I18N_VPU_RTSP));
+            g_dd_mode = lv_dropdown_create(scr);
+            lv_dropdown_set_options(g_dd_mode, dd_opts);
+            lv_dropdown_set_selected(g_dd_mode, settings.video_mode);
+            lv_obj_set_size(g_dd_mode, SX(220), SY(38));
+            lv_obj_align(g_dd_mode, LV_ALIGN_TOP_LEFT, SX(INPUT_X),
+                         SY(y) + (SY(ROW_H) - SY(38)) / 2);
+            lv_obj_set_style_text_font(g_dd_mode, SF(18), 0);
+            lv_obj_set_style_text_font(g_dd_mode, SF(18), LV_PART_INDICATOR);
+            lv_obj_add_event_cb(g_dd_mode, on_dd_mode, LV_EVENT_VALUE_CHANGED, NULL);
+            y += ROW_H + ROW_GAP;
+
             int y_mode = y;
 
-            /* RTP port row */
+            /* RTP port row (visible when mode==1) */
             g_lbl_rtp = lv_label_create(scr);
             lv_label_set_text(g_lbl_rtp, TR(I18N_VPU_RTP_PORT));
             lv_obj_set_style_text_color(g_lbl_rtp, lv_color_hex(0xe0e0e0), 0);
@@ -609,7 +628,7 @@ void open_vpu_modal(lv_event_t * e) {
             snprintf(buf, sizeof buf, "%d", settings.video_rtp);
             lv_textarea_set_text(g_ta_rtp, buf);
 
-            /* RTSP URL row (same y as RTP row — toggled visibility) */
+            /* RTSP URL row (visible when mode==2, same y as RTP row) */
             g_lbl_rtsp = lv_label_create(scr);
             lv_label_set_text(g_lbl_rtsp, TR(I18N_VPU_RTSP_URL));
             lv_obj_set_style_text_color(g_lbl_rtsp, lv_color_hex(0xe0e0e0), 0);
@@ -626,15 +645,7 @@ void open_vpu_modal(lv_event_t * e) {
             if (settings.video_rtsp[0])
                 lv_textarea_set_text(g_ta_rtsp, settings.video_rtsp);
 
-            /* Set initial visibility */
-            if (rtsp_mode) {
-                lv_obj_add_flag(g_ta_rtp, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_add_flag(g_lbl_rtp, LV_OBJ_FLAG_HIDDEN);
-            } else {
-                lv_obj_add_flag(g_ta_rtsp, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_add_flag(g_lbl_rtsp, LV_OBJ_FLAG_HIDDEN);
-            }
-
+            update_mode_visibility(settings.video_mode);
             y = y_mode + ROW_H + ROW_GAP;
         }
 

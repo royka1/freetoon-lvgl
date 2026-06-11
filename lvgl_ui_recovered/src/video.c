@@ -72,6 +72,7 @@ static int          s_spawn_codec = -1;
 static int          s_spawn_prebuffer = -1;
 static int          s_spawn_deblock = -1;
 static int          s_spawn_warm = -1;
+static int          s_spawn_mode = -1;
 
 static int clamp(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -122,9 +123,9 @@ static int spawn_warm(void)
             char pb[12]; snprintf(pb, sizeof pb, "%d", settings.video_prebuffer);
             av[n++] = "--prebuffer"; av[n++] = pb;
         }
-        if (settings.video_rtsp[0]) {
+        if (settings.video_mode == 2 && settings.video_rtsp[0]) {
             av[n++] = "--rtsp"; av[n++] = settings.video_rtsp;
-        } else if (settings.video_rtp > 0) {
+        } else if (settings.video_mode == 1 && settings.video_rtp > 0) {
             av[n++] = "--rtp"; av[n++] = port;
         } else {
             av[n++] = DEFAULT_PORT_STR;
@@ -147,12 +148,13 @@ static int spawn_warm(void)
     s_spawn_prebuffer = settings.video_prebuffer;
     s_spawn_deblock = settings.video_deblock;
     s_spawn_warm = settings.video_warm;
+    s_spawn_mode = settings.video_mode;
     printf("[video] spawned vpu_stream pid=%d rect=(%d,%d)+%dx%d %s=%d%s%s%s%s\n",
            s_pid, s_x, s_y, s_w, s_h,
-           settings.video_rtsp[0] ? "rtsp" :
-           settings.video_rtp > 0 ? "rtp" : "tcp",
-           settings.video_rtsp[0] ? 0 :
-           settings.video_rtp > 0 ? settings.video_rtp : atoi(DEFAULT_PORT_STR),
+           settings.video_mode == 2 ? "rtsp" :
+           settings.video_mode == 1 ? "rtp" : "tcp",
+           settings.video_mode == 2 ? 0 :
+           settings.video_mode == 1 ? settings.video_rtp : atoi(DEFAULT_PORT_STR),
            settings.video_overlay ? " overlay" : "",
            settings.video_codec ? " h264" : "",
            settings.video_deblock ? " deblock" : "",
@@ -234,7 +236,8 @@ void video_open(void)
                       settings.video_codec != s_spawn_codec ||
                       settings.video_prebuffer != s_spawn_prebuffer ||
                       settings.video_deblock != s_spawn_deblock ||
-                      settings.video_warm != s_spawn_warm)) {
+                      settings.video_warm != s_spawn_warm ||
+                      settings.video_mode != s_spawn_mode)) {
         printf("[video] settings changed (%d,%d)+%dx%d rtp=%d ov=%d -> (%d,%d)+%dx%d rtp=%d ov=%d; respawning child\n",
                s_spawn_x, s_spawn_y, s_spawn_w, s_spawn_h, s_spawn_rtp, s_spawn_overlay,
                s_x, s_y, s_w, s_h, settings.video_rtp, settings.video_overlay);

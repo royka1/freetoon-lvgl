@@ -240,6 +240,7 @@ typedef struct {
     int  video_codec;          /* 0 = MPEG-4 (default), 1 = H.264 */
     int  video_prebuffer;      /* KB poll threshold; 0 = vpu_stream default */
     int  video_deblock;        /* 0/1 — enable PP post-deblocking */
+    int  video_mode;           /* 0=TCP (default), 1=RTP, 2=RTSP */
     int  video_warm;           /* 0/1 — keep decoder warm in background (default 1) */
 
     /* LAN hosts for the optional integrations + healthcheck probes. All

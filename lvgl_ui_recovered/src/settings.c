@@ -111,6 +111,7 @@ settings_t settings = {
     .video_codec         = 0,
     .video_prebuffer     = 0,
     .video_deblock       = 0,
+    .video_mode          = 0,
     .video_warm          = 1,
     .p1_elec_host        = "",
     .p1_water_host       = "",
@@ -341,6 +342,7 @@ void settings_load(void) {
         else if (strcmp(k, "video_codec")     == 0) settings.video_codec = (iv == 1) ? 1 : 0;
         else if (strcmp(k, "video_prebuffer") == 0) settings.video_prebuffer = (iv < 0 || iv > 2048) ? 0 : iv;
         else if (strcmp(k, "video_deblock")   == 0) settings.video_deblock = (iv ? 1 : 0);
+        else if (strcmp(k, "video_mode")     == 0) settings.video_mode = (iv < 0 || iv > 2) ? 0 : iv;
         else if (strcmp(k, "video_warm")     == 0) settings.video_warm = (iv ? 1 : 0);
         else if (strcmp(k, "doorbell_stream_url") == 0) snprintf(settings.doorbell_stream_url, sizeof settings.doorbell_stream_url, "%s", v);
         else if (strcmp(k, "p1_elec_host")     == 0) snprintf(settings.p1_elec_host, sizeof settings.p1_elec_host, "%s", v);
@@ -689,6 +691,7 @@ void settings_save(void) {
     if (settings.video_prebuffer)
         fprintf(f, "video_prebuffer=%d\n", settings.video_prebuffer);
     fprintf(f, "video_deblock=%d\n",   settings.video_deblock);
+    fprintf(f, "video_mode=%d\n",     settings.video_mode);
     fprintf(f, "video_warm=%d\n",     settings.video_warm);
     fprintf(f, "doorbell_stream_url=%s\n", settings.doorbell_stream_url);
     fprintf(f, "p1_elec_host=%s\n", settings.p1_elec_host);
