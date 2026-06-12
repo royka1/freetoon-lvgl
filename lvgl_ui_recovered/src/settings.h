@@ -52,10 +52,10 @@ typedef struct {
                                  empty = no password). No spaces. */
     char weather_location[32];   /* Free-text location name shown in the UI
                                     (default "Medemblik"). Cosmetic for now. */
-    int  weather_location_id;    /* Buienradar wikiCode for hourly-forecast
-                                    fetch — default 6249 ≈ Berkhout (KNMI
-                                    station closest to Medemblik). 0 disables
-                                    the hourly fetch. */
+    int  weather_location_id;    /* GeoNames id (from the city geocode) used for
+                                    the per-location forecast endpoint — default
+                                    2757783 (Medemblik). Set via Settings →
+                                    weather city. 0 disables the forecast fetch. */
     int  forecast_mode;          /* 0 = auto (hourly if available, else daily)
                                     1 = force hourly
                                     2 = force daily */

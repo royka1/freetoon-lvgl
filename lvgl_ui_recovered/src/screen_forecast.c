@@ -15,6 +15,8 @@
 #include "settings.h"
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 
 static lv_obj_t * scr_root = NULL;
 static lv_obj_t * lbl_title;
@@ -35,6 +37,7 @@ static lv_timer_t * refresh_timer = NULL;
 #define RADAR_ZOOM_MAX  768
 #define RADAR_ZOOM_STEP  64
 static int radar_zoom = 195;             /* fits 550-wide source into 380 */
+static time_t radar_mtime = 0;           /* last-loaded radar gif mtime */
 
 static void on_back(lv_event_t * e) { (void)e; ui_pop(); }
 static void on_radar_zoom(lv_event_t * e) {
@@ -48,6 +51,24 @@ static void on_radar_zoom(lv_event_t * e) {
 
 static void refresh_cb(lv_timer_t * t) {
     (void)t;
+
+    /* (Re)load the radar GIF whenever the downloaded file changes. The weather
+     * thread refreshes /tmp/toonui_radar.gif every ~5 min, and on a freshly
+     * built screen the file may not have existed yet when the lv_gif was
+     * created (radar_url was empty while the feed was down) — so a one-time
+     * set_src at creation left a permanently blank image. Reloading only on
+     * mtime change avoids restarting the animation every tick. */
+    if (radar_img) {
+        struct stat sb;
+        if (stat("/tmp/toonui_radar.gif", &sb) == 0 &&
+            sb.st_size > 0 && sb.st_mtime != radar_mtime) {
+            radar_mtime = sb.st_mtime;
+            lv_gif_set_src(radar_img, "S:/tmp/toonui_radar.gif");
+            lv_img_set_zoom(radar_img, radar_zoom);
+            lv_obj_center(radar_img);
+        }
+    }
+
     lv_label_set_text(lbl_title, weather_state.weatherreport_title);
     lv_label_set_text(lbl_body,  weather_state.weatherreport_text);
 
@@ -66,9 +87,11 @@ static void refresh_cb(lv_timer_t * t) {
                     lv_color_hex(weather_icon_color_for(h->icon)), 0);
             }
             if (fc_wind_lbl[i]) {
-                if (h->wind_dir[0])
+                if (h->wind_dir[0] && h->wind_bft > 0)
                     lv_label_set_text_fmt(fc_wind_lbl[i], "%s %d Bft",
                                           h->wind_dir, h->wind_bft);
+                else if (h->wind_dir[0])
+                    lv_label_set_text(fc_wind_lbl[i], h->wind_dir);
                 else
                     lv_label_set_text(fc_wind_lbl[i], "");
             }
@@ -96,9 +119,11 @@ static void refresh_cb(lv_timer_t * t) {
                     lv_color_hex(weather_icon_color_for(d->icon)), 0);
             }
             if (fc_wind_lbl[i]) {
-                if (d->wind_dir[0])
+                if (d->wind_dir[0] && d->wind_bft > 0)
                     lv_label_set_text_fmt(fc_wind_lbl[i], "%s %d Bft",
                                           d->wind_dir, d->wind_bft);
+                else if (d->wind_dir[0])
+                    lv_label_set_text(fc_wind_lbl[i], d->wind_dir);
                 else
                     lv_label_set_text(fc_wind_lbl[i], "");
             }
@@ -153,7 +178,9 @@ lv_obj_t * screen_forecast_create(void) {
     /* Buienradar radar GIF. With our local gifdec patch the no-GCT
        case is now accepted; the per-frame LCT populates the palette. */
     radar_img = lv_gif_create(radar_frame);
-    lv_gif_set_src(radar_img, "S:/tmp/toonui_radar.gif");
+    /* Source is loaded lazily by refresh_cb (mtime-driven) so a missing file
+       when the screen is first built no longer leaves a permanently blank
+       image, and new radar frames are picked up as they download. */
     lv_img_set_zoom(radar_img, radar_zoom);
     lv_obj_center(radar_img);
 

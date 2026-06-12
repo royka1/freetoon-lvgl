@@ -1,14 +1,15 @@
 /*
- * Buienradar JSON poller.
+ * Buienradar JSON poller. Two sources:
  *
- * As of 2026, data.buienradar.nl/2.0/feed/json is broken (returns a .NET
- * type-name stub instead of JSON).  Everything — current weather, 5‑day
- * forecast, and 3‑hourly slots — is now derived from the one endpoint that
- * still works: forecast.buienradar.nl/2.0/forecast/<geonames-id>.
+ *  - forecast.buienradar.nl/2.0/forecast/<geonames-id>  (location-specific):
+ *    current weather, the 5-day forecast, and 3-hourly slots. Lowercase keys.
+ *    The old "beaufort" field is gone — wind force is derived from
+ *    "windspeedms" (ms_to_beaufort).
  *
- * The old daily endpoint is still fetched best-effort for the radar-image
- * URL and the weather-report text, but a failure there no longer knocks the
- * "connected" flag down; the forecast endpoint is the source of truth.
+ *  - data.buienradar.nl/2.0/feed/json  (national): the radar-image URL
+ *    (Actual.ActualRadarUrl) and the human weather report
+ *    (Forecast.WeatherReport). In mid-2026 buienradar renamed every key to
+ *    PascalCase and \u-escaped the radar URL's '&'; the parser tracks that.
  *
  * No JSON library: we use small strstr-based extractors.
  */
@@ -23,8 +24,6 @@
 #include <time.h>
 
 weather_state_t weather_state = {0};
-
-#define STATION_ID 6249  /* Berkhout — nearest configured to the user. */
 
 /* Scan a substring of json for "key":<number>; returns parsed double, dflt if missing. */
 static double js_num(const char * begin, const char * end, const char * key, double dflt) {
@@ -41,7 +40,17 @@ static double js_num(const char * begin, const char * end, const char * key, dou
     return strtod(p, NULL);
 }
 
-/* Scan a substring for "key":"VALUE" — copies into out (max outsz-1). */
+static int hexval(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+
+/* Scan a substring for "key":"VALUE" — copies into out (max outsz-1),
+   translating JSON escapes (\n \t \" \\ \/ and \uXXXX → UTF-8). The feed
+   escapes the radar URL's '&' as & and may emit \u-encoded accents, so
+   copying raw bytes is not enough. */
 static int js_str(const char * begin, const char * end, const char * key,
                   char * out, size_t outsz) {
     char n[64];
@@ -49,15 +58,39 @@ static int js_str(const char * begin, const char * end, const char * key,
     const char * p = strstr(begin, n);
     if (!p || p >= end) { if (outsz) out[0] = 0; return 0; }
     p += strlen(n);
+    size_t o = 0;
     const char * e = p;
-    while (e < end && *e != '"') {
-        if (*e == '\\' && e + 1 < end) e++;
-        e++;
+    while (e < end && *e != '"' && o + 4 < outsz) {
+        if (*e == '\\' && e + 1 < end) {
+            char c = e[1];
+            if (c == 'u' && e + 5 < end) {
+                int cp = (hexval(e[2]) << 12) | (hexval(e[3]) << 8) |
+                         (hexval(e[4]) << 4) | hexval(e[5]);
+                if (cp < 0x80) {
+                    out[o++] = (char)cp;
+                } else if (cp < 0x800) {
+                    out[o++] = (char)(0xC0 | (cp >> 6));
+                    out[o++] = (char)(0x80 | (cp & 0x3F));
+                } else {
+                    out[o++] = (char)(0xE0 | (cp >> 12));
+                    out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+                    out[o++] = (char)(0x80 | (cp & 0x3F));
+                }
+                e += 6;
+            } else {
+                switch (c) {
+                    case 'n': out[o++] = '\n'; break;
+                    case 't': out[o++] = '\t'; break;
+                    case 'r': break;                 /* drop CR */
+                    default:  out[o++] = c;  break;  /* \" \\ \/ */
+                }
+                e += 2;
+            }
+        } else {
+            out[o++] = *e++;
+        }
     }
-    size_t len = (size_t)(e - p);
-    if (len >= outsz) len = outsz - 1;
-    memcpy(out, p, len);
-    out[len] = 0;
+    out[o] = 0;
     return 1;
 }
 
@@ -106,98 +139,63 @@ static void format_day_label(const char * iso_date, char * out, size_t outsz) {
     snprintf(out, outsz, "%s %d-%d", dutch_dow[dow], d, mo);
 }
 
+/* Wind force in Beaufort from a wind speed in m/s. Buienradar dropped the
+   precomputed "beaufort"/"WindspeedBeaufort" field (now null), so we derive
+   it from "windspeedms" using the standard scale (lower bound of each band). */
+static int ms_to_beaufort(double ms) {
+    static const double lo[12] = {0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9,
+                                  17.2, 20.8, 24.5, 28.5, 32.7};
+    int b = 0;
+    for (int i = 0; i < 12; i++) if (ms >= lo[i]) b = i + 1;
+    return b;
+}
+
+/* Parse the national feed (data.buienradar.nl/2.0/feed/json). As of mid-2026
+   buienradar renamed every key to PascalCase (Actual/Forecast/...). This feed
+   is the only source of the radar-image URL (Actual.ActualRadarUrl) and the
+   human weather report (Forecast.WeatherReport). Current conditions and the
+   5-day strip are location-specific and come from the forecast endpoint, so
+   here we deliberately take only radar + report. Returns 0 if either was
+   found, -1 otherwise. */
 static int parse_buienradar(const char * body) {
-    /* --- current station --- */
-    char needle[64];
-    snprintf(needle, sizeof(needle), "\"stationid\":%d", STATION_ID);
-    const char * st = strstr(body, needle);
-    if (!st) return -1;
-    /* Limit search to "}}" terminator of this station object. */
-    const char * st_end = strstr(st, "}");
-    if (!st_end) st_end = body + strlen(body);
+    const char * end = body + strlen(body);
+    int got = 0;
 
-    weather_state.current_temp = (float)js_num(st, st_end, "temperature", 0);
-    weather_state.feel_temp    = (float)js_num(st, st_end, "feeltemperature", 0);
-    js_str(st, st_end, "weatherdescription",
-           weather_state.current_desc, sizeof(weather_state.current_desc));
-    /* iconurl looks like .../30x30/a.png — extract the letter. */
-    char tmp[160];
-    if (js_str(st, st_end, "iconurl", tmp, sizeof(tmp))) {
-        const char * slash = strrchr(tmp, '/');
-        const char * fname = slash ? slash + 1 : tmp;
-        size_t len = strlen(fname);
-        if (len > 4 && fname[len-4] == '.') {
-            size_t n = len - 4;
-            if (n >= sizeof(weather_state.current_icon))
-                n = sizeof(weather_state.current_icon) - 1;
-            memcpy(weather_state.current_icon, fname, n);
-            weather_state.current_icon[n] = 0;
-        }
-    }
+    /* Radar image URL — js_str unescapes the & ('&') in the query. */
+    if (js_str(body, end, "ActualRadarUrl",
+               weather_state.radar_url, sizeof(weather_state.radar_url)) &&
+        weather_state.radar_url[0])
+        got = 1;
 
-    /* --- radar image URL (lives in "actual" object) --- */
-    js_str(body, body + strlen(body), "actualradarurl",
-           weather_state.radar_url, sizeof(weather_state.radar_url));
-
-    /* --- weatherreport title + text --- */
-    const char * wr = strstr(body, "\"weatherreport\":");
+    /* Weather report: Forecast.WeatherReport { Title, Summary, Text }. */
+    const char * wr = strstr(body, "\"WeatherReport\":");
     if (wr) {
-        const char * wr_end = strstr(wr, "\"shortterm\"");
-        if (!wr_end) wr_end = wr + 4096;
-        js_str(wr, wr_end, "title", weather_state.weatherreport_title,
-               sizeof(weather_state.weatherreport_title));
-        js_str(wr, wr_end, "text", weather_state.weatherreport_text,
-               sizeof(weather_state.weatherreport_text));
-        /* Replace HTML entities the buienradar feed sometimes leaks
-           (`&nbsp;`) with regular spaces. */
+        const char * wr_end = strstr(wr, "\"ShortTermForecast\"");
+        if (!wr_end || wr_end > end) {
+            wr_end = (wr + 4096 < end) ? wr + 4096 : end;
+        }
+        char title[128];
+        if (js_str(wr, wr_end, "Title", title, sizeof title) && title[0]) {
+            snprintf(weather_state.weatherreport_title,
+                     sizeof weather_state.weatherreport_title, "%s", title);
+            got = 1;
+        }
+        /* Prefer the full Text; fall back to the shorter Summary. */
+        if (!js_str(wr, wr_end, "Text", weather_state.weatherreport_text,
+                    sizeof weather_state.weatherreport_text) ||
+            !weather_state.weatherreport_text[0]) {
+            js_str(wr, wr_end, "Summary", weather_state.weatherreport_text,
+                   sizeof weather_state.weatherreport_text);
+        }
+        if (weather_state.weatherreport_text[0]) got = 1;
+        /* Strip any &nbsp; the report leaks. */
         char * p;
         while ((p = strstr(weather_state.weatherreport_text, "&nbsp;")) != NULL) {
             *p = ' ';
             memmove(p + 1, p + 6, strlen(p + 6) + 1);
         }
     }
-
-    /* --- 5-day forecast --- */
-    weather_state.day_count = 0;
-    const char * fc = strstr(body, "\"fivedayforecast\":[");
-    if (!fc) return 0;
-    const char * walk = fc;
-    for (int i = 0; i < WEATHER_FORECAST_DAYS; i++) {
-        walk = strstr(walk, "{\"$id\":");
-        if (!walk) break;
-        const char * day_end = strstr(walk, "}");
-        if (!day_end) break;
-        weather_day_t * dst = &weather_state.days[i];
-        char iso[32];
-        if (!js_str(walk, day_end, "day", iso, sizeof(iso))) { walk++; continue; }
-        format_day_label(iso, dst->day, sizeof(dst->day));
-        dst->min_temp    = (float)js_num(walk, day_end, "mintemperature", 0);
-        dst->max_temp    = (float)js_num(walk, day_end, "maxtemperature", 0);
-        dst->rain_chance = (int)js_num(walk, day_end, "rainChance", 0);
-        dst->wind_bft    = (int)js_num(walk, day_end, "wind", 0);
-        js_str(walk, day_end, "windDirection", dst->wind_dir, sizeof(dst->wind_dir));
-        /* buienradar emits lowercase like "zw"; capitalise so it reads
-           well in the UI. */
-        for (int k = 0; dst->wind_dir[k]; k++)
-            if (dst->wind_dir[k] >= 'a' && dst->wind_dir[k] <= 'z')
-                dst->wind_dir[k] -= 32;
-        js_str(walk, day_end, "weatherdescription", dst->desc, sizeof(dst->desc));
-        char icon_url[160];
-        if (js_str(walk, day_end, "iconurl", icon_url, sizeof(icon_url))) {
-            const char * slash = strrchr(icon_url, '/');
-            const char * fname = slash ? slash + 1 : icon_url;
-            size_t len = strlen(fname);
-            if (len > 4 && fname[len-4] == '.') {
-                size_t n = len - 4;
-                if (n >= sizeof(dst->icon)) n = sizeof(dst->icon) - 1;
-                memcpy(dst->icon, fname, n);
-                dst->icon[n] = 0;
-            }
-        }
-        weather_state.day_count = i + 1;
-        walk = day_end + 1;
-    }
-    return 0;
+    return got ? 0 : -1;
 }
 
 /* Hourly forecast fetcher — calls forecast.buienradar.nl with the
@@ -261,7 +259,7 @@ static int parse_buienradar_hourly(const char * body) {
         if (strcmp(timetype, "Hour") != 0) { p = slot_end; continue; }
 
         h.temperature = (float)js_num(dt_end, slot_end, "temperature", 0);
-        h.wind_bft    = (int)js_num(dt_end, slot_end, "beaufort", 0);
+        h.wind_bft    = ms_to_beaufort(js_num(dt_end, slot_end, "windspeedms", 0));
         js_str(dt_end, slot_end, "winddirection", h.wind_dir, sizeof h.wind_dir);
         for (int k = 0; h.wind_dir[k]; k++)
             if (h.wind_dir[k] >= 'a' && h.wind_dir[k] <= 'z')
@@ -332,8 +330,8 @@ static void parse_forecast_daily(const char * body)
         format_day_label(iso, dst->day, sizeof(dst->day));
         dst->min_temp    = (float)js_num(after, body_end, "mintemperature", 0);
         dst->max_temp    = (float)js_num(after, body_end, "maxtemperature", 0);
-        dst->rain_chance = (int)js_num(after, body_end, "precipitation", 0);
-        dst->wind_bft    = (int)js_num(after, body_end, "beaufort", 0);
+        dst->rain_chance = (int)js_num(after, body_end, "precipitationmm", 0);
+        dst->wind_bft    = ms_to_beaufort(js_num(after, body_end, "windspeedms", 0));
         js_str(after, body_end, "winddirection", dst->wind_dir, sizeof(dst->wind_dir));
         for (int k = 0; dst->wind_dir[k]; k++)
             if (dst->wind_dir[k] >= 'a' && dst->wind_dir[k] <= 'z')
@@ -453,7 +451,6 @@ static int fetch_buienradar_hourly(void) {
     int h_ok = parse_buienradar_hourly(body);
     parse_forecast_daily(body);
     parse_forecast_current(body);
-    synth_weatherreport();   /* fill the report panel from the parsed forecast */
     return h_ok;
 }
 
@@ -512,40 +509,42 @@ static void * wx_thread(void * arg) {
     static char body[128 * 1024];
     int radar_tick = 0;
     while (1) {
-        /* Primary data source — the forecast endpoint provides everything:
-         * current weather, 5‑day forecast, and 3‑hourly slots. */
+        /* Location-specific source — the per-id forecast endpoint provides
+         * current weather, the 5-day forecast, and the 3-hourly slots. Still
+         * lowercase keys, but its "beaufort" field is gone (we now derive Bft
+         * from "windspeedms"). */
         int fc_ok = fetch_buienradar_hourly();
-        if (fc_ok == 0) {
-            weather_state.connected = 1;
+        if (fc_ok == 0)
             fprintf(stderr, "[wx] forecast: %s %.1fC, %d-day, %d hourly slots\n",
-                    weather_state.current_desc,
-                    weather_state.current_temp, weather_state.day_count,
-                    weather_state.hour_count);
-        } else {
-            weather_state.connected = 0;
+                    weather_state.current_desc, weather_state.current_temp,
+                    weather_state.day_count, weather_state.hour_count);
+        else
             fprintf(stderr, "[wx] forecast fetch/parse failed\n");
-        }
 
-        /* Secondary: the old daily feed — tried only for the radar-image
-         * URL and the weather-report text.  A failure here is harmless;
-         * the forecast endpoint is the source of truth.  If the endpoint
-         * comes back (buienradar reverts/fixes their API), we silently
-         * regain radar + report. */
+        /* National feed — the source of the radar-image URL and the human
+         * weather report. buienradar moved to PascalCase keys in 2026; the
+         * parser tracks that. Independent of the forecast endpoint. */
+        int feed_ok = 0;
         if (http_fetch("https://data.buienradar.nl/2.0/feed/json",
-                       body, sizeof(body)) == 0) {
-            if (parse_buienradar(body) == 0) {
-                fprintf(stderr, "[wx] daily feed OK — radar + report restored "
-                        "(body %zu KB)\n", strlen(body) / 1024);
-            } else {
-                fprintf(stderr, "[wx] daily feed unparseable "
-                        "(body %zu KB, starts '%.60s')\n",
-                        strlen(body) / 1024, body);
-            }
+                       body, sizeof(body)) == 0 &&
+            parse_buienradar(body) == 0) {
+            feed_ok = 1;
+            fprintf(stderr, "[wx] feed OK — radar + report (body %zu KB)\n",
+                    strlen(body) / 1024);
         } else {
-            fprintf(stderr, "[wx] daily feed fetch failed\n");
+            fprintf(stderr, "[wx] feed fetch/parse failed\n");
         }
 
-        if (weather_state.connected) {
+        /* Report fallback: if the feed gave no report, synthesise one from the
+         * parsed 5-day forecast so the panel is never blank. */
+        if (!feed_ok || !weather_state.weatherreport_title[0])
+            synth_weatherreport();
+
+        weather_state.connected = (fc_ok == 0) || feed_ok;
+
+        /* Refresh the radar GIF a few times (5-min cadence) whenever we have a
+         * URL, then loop back to re-poll the JSON. */
+        if (weather_state.radar_url[0]) {
             for (int i = 0; i < 3; i++) {
                 if (fetch_radar_image() == 0)
                     fprintf(stderr, "[wx] radar refreshed (tick %d)\n", radar_tick++);
