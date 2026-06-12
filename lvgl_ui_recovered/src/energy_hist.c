@@ -422,15 +422,39 @@ int energy_hist_daily_series(int metric, long from_ts, long to_ts,
     out->n = 0; out->min = 1e30; out->max = -1e30;
     int from_ymd = ymd_of((time_t)from_ts), to_ymd = ymd_of((time_t)to_ts);
     int today    = ymd_of(time(NULL));
+    /* For very long spans (the Year view = up to 12 years of days, which far
+       exceeds STATS_MAX_SAMPLES) aggregate per calendar month so the whole span
+       fits in one series; the Statistics screen re-buckets by ts into year bars
+       regardless. Shorter spans (Day/Week/Month) stay per-day. days[] is kept
+       sorted ascending, so equal YYYYMM keys are contiguous. */
+    int monthly = (to_ts - from_ts) > 400L * 86400L;
     pthread_mutex_lock(&days_mtx);
-    for (int i = 0; i < days_n; i++) {
-        if (days[i].ymd < from_ymd || days[i].ymd > to_ymd || days[i].ymd == today)
-            continue;
-        double v = metric == 0 ? days[i].net_kwh
-                 : metric == 1 ? days[i].gas_m3 : days[i].water_m3;
-        /* Drop legacy bogus gas/water days (whole meter total stored as usage). */
-        if (metric != 0 && (v > 100 || v < 0)) continue;
-        series_emit(out, ymd_midnight(days[i].ymd), v);
+    if (monthly) {
+        int cur_key = -1, have = 0; double acc = 0;
+        for (int i = 0; i < days_n; i++) {
+            if (days[i].ymd < from_ymd || days[i].ymd > to_ymd || days[i].ymd == today)
+                continue;
+            double v = metric == 0 ? days[i].net_kwh
+                     : metric == 1 ? days[i].gas_m3 : days[i].water_m3;
+            if (metric != 0 && (v > 1500 || v < 0)) continue;
+            int key = days[i].ymd / 100;            /* YYYYMM */
+            if (key != cur_key) {
+                if (have) series_emit(out, ymd_midnight(cur_key * 100 + 15), acc);
+                cur_key = key; acc = 0; have = 1;
+            }
+            acc += v;
+        }
+        if (have) series_emit(out, ymd_midnight(cur_key * 100 + 15), acc);
+    } else {
+        for (int i = 0; i < days_n; i++) {
+            if (days[i].ymd < from_ymd || days[i].ymd > to_ymd || days[i].ymd == today)
+                continue;
+            double v = metric == 0 ? days[i].net_kwh
+                     : metric == 1 ? days[i].gas_m3 : days[i].water_m3;
+            /* Drop legacy bogus gas/water days (whole meter total stored as usage). */
+            if (metric != 0 && (v > 1500 || v < 0)) continue;
+            series_emit(out, ymd_midnight(days[i].ymd), v);
+        }
     }
     pthread_mutex_unlock(&days_mtx);
     /* Today's running total (not yet committed to the store). */
