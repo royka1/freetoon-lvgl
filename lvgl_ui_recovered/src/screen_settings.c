@@ -107,7 +107,7 @@ static void on_forecast_mode_change(lv_event_t * e) {
  * the modal_close() save path. The id is what the API actually uses; the
  * label is purely cosmetic for the Weather screen header. */
 static lv_obj_t * ta_wx_city = NULL;
-static lv_obj_t * ta_wx_id   = NULL;
+static lv_obj_t * lbl_wx_id   = NULL;   /* read-only: id resolved from the city */
 static lv_obj_t * lbl_wx_status = NULL;
 static lv_obj_t * ta_master   = NULL;
 static lv_obj_t * sw_client   = NULL;
@@ -123,34 +123,43 @@ static lv_obj_t * lbl_news_status = NULL;
 static lv_obj_t * lbl_news_speed  = NULL;
 static lv_obj_t * sl_news_speed   = NULL;
 static lv_obj_t * news_feeds_list = NULL;   /* multi-feed list */
+/* Resolve the Buienradar (GeoNames) id from the typed city via Open-Meteo
+   geocoding and show it. A quick blocking HTTP call — fine for a settings
+   button. `force` re-looks-up even when the city text is unchanged. */
+static void weather_resolve_id(int force) {
+    if (!ta_wx_city) return;
+    const char * c = lv_textarea_get_text(ta_wx_city);
+    int changed = strcmp(c, settings.weather_location) != 0;
+    snprintf(settings.weather_location,
+             sizeof settings.weather_location, "%s", c);
+    if (!settings.weather_location[0]) return;
+    /* Skip the network round-trip when nothing changed and we already have one. */
+    if (!force && !changed && settings.weather_location_id > 0) {
+        if (lbl_wx_id)
+            lv_label_set_text_fmt(lbl_wx_id, "%d", settings.weather_location_id);
+        return;
+    }
+    int gid = weather_geocode(settings.weather_location);
+    if (gid > 0) {
+        settings.weather_location_id = gid;
+        if (lbl_wx_id) lv_label_set_text_fmt(lbl_wx_id, "%d", gid);
+        if (lbl_wx_status)
+            lv_label_set_text_fmt(lbl_wx_status, "Gevonden: %s = %d",
+                                  settings.weather_location, gid);
+    } else if (lbl_wx_status) {
+        lv_label_set_text_fmt(lbl_wx_status,
+            "Niet gevonden voor '%s' - probeer een andere plaatsnaam",
+            settings.weather_location);
+    }
+}
+static void on_weather_lookup(lv_event_t * e) { (void)e; weather_resolve_id(1); }
 static void on_weather_apply(lv_event_t * e) {
     (void)e;
-    int city_changed = 0;
-    if (ta_wx_city) {
-        const char * c = lv_textarea_get_text(ta_wx_city);
-        city_changed = strcmp(c, settings.weather_location) != 0;
-        snprintf(settings.weather_location,
-                 sizeof settings.weather_location, "%s", c);
-    }
-    /* City is authoritative: a changed name auto-resolves the Buienradar id via
-     * Open-Meteo geocoding. The id field is only honoured as a manual override
-     * when the city is unchanged. */
-    if (city_changed && settings.weather_location[0]) {
-        int gid = weather_geocode(settings.weather_location);
-        if (gid > 0) settings.weather_location_id = gid;
-        if (ta_wx_id) {
-            char idbuf[12]; snprintf(idbuf, sizeof idbuf, "%d", settings.weather_location_id);
-            lv_textarea_set_text(ta_wx_id, idbuf);
-        }
-    } else if (ta_wx_id) {
-        int id = atoi(lv_textarea_get_text(ta_wx_id));
-        if (id > 0) settings.weather_location_id = id;
-    }
+    weather_resolve_id(0);          /* refresh the id if the city changed */
     settings_save();
     if (lbl_wx_status)
-        lv_label_set_text_fmt(lbl_wx_status,
-            "Saved. %s = %d", settings.weather_location,
-            settings.weather_location_id);
+        lv_label_set_text_fmt(lbl_wx_status, "Opgeslagen: %s = %d",
+            settings.weather_location, settings.weather_location_id);
 }
 static void on_dim_waste_change(lv_event_t * e) {
     settings.show_dim_waste = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED) ? 1 : 0;
@@ -773,24 +782,32 @@ static void open_weather_modal(lv_event_t * e) {
     lv_obj_set_style_text_font(lbl_id, SF(22), 0);
     lv_label_set_text(lbl_id, "Buienradar id:");
     lv_obj_align(lbl_id, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
-    ta_wx_id = lv_textarea_create(p);
-    lv_obj_set_size(ta_wx_id, SX(380), SY(44));
-    lv_obj_align(ta_wx_id, LV_ALIGN_TOP_LEFT, SX(240), SY(y - 4));
-    lv_textarea_set_one_line(ta_wx_id, true);
-    lv_textarea_set_accepted_chars(ta_wx_id, "0123456789");
-    char id_str[16]; snprintf(id_str, sizeof id_str, "%d",
-                              settings.weather_location_id);
-    lv_textarea_set_text(ta_wx_id, id_str);
-    y += 50;
+    /* Read-only: the id is resolved from the city, not typed. */
+    lbl_wx_id = lv_label_create(p);
+    lv_obj_set_style_text_color(lbl_wx_id, lv_color_hex(0xffcc44), 0);
+    lv_obj_set_style_text_font(lbl_wx_id, SF(22), 0);
+    lv_label_set_text_fmt(lbl_wx_id, "%d", settings.weather_location_id);
+    lv_obj_align(lbl_wx_id, LV_ALIGN_TOP_LEFT, SX(240), SY(y));
+    /* "Zoek id" — geocode the typed city via Open-Meteo and fill the id. */
+    lv_obj_t * btn_lookup = lv_btn_create(p);
+    lv_obj_set_size(btn_lookup, SX(170), SY(48));
+    lv_obj_align(btn_lookup, LV_ALIGN_TOP_LEFT, SX(420), SY(y - 10));
+    lv_obj_set_style_bg_color(btn_lookup, lv_color_hex(0x3a6090), 0);
+    lv_obj_add_event_cb(btn_lookup, on_weather_lookup, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * bll = lv_label_create(btn_lookup);
+    lv_label_set_text(bll, "Zoek id");
+    lv_obj_set_style_text_color(bll, lv_color_hex(0xffffff), 0);
+    lv_obj_center(bll);
+    y += 56;
 
     /* Hint — where to find the id. */
     lv_obj_t * hint = lv_label_create(p);
     lv_obj_set_style_text_color(hint, lv_color_hex(0x88aabb), 0);
     lv_obj_set_style_text_font(hint, SF(14), 0);
     lv_label_set_text(hint,
-        "Find your city's id in the URL on buienradar.nl/weer/<city>/nl/<ID>\n"
-        "(e.g. Medemblik = 2751073, De Bilt = 2757783). Plain KNMI codes\n"
-        "won't work — these are GeoNames ids.");
+        "Type your city and tap \"Zoek id\" - the Buienradar (GeoNames) id is\n"
+        "looked up automatically; Apply saves it. (Plain KNMI station codes\n"
+        "won't work - these are GeoNames ids.)");
     lv_obj_align(hint, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     y += 70;
 
