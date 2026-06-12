@@ -138,8 +138,11 @@ $(shell mkdir -p $(BUILDDIR); [ "$$(cat $(VERFILE) 2>/dev/null)" = "$(BUILD_VERS
 all: $(BUILDDIR)/$(OUT) $(EXTRA)
 
 # Recompile the version-bearing objects whenever BUILD_VERSION changes
-# (placed after `all` so it doesn't hijack the default goal).
-$(BUILDDIR)/update_check.o $(BUILDDIR)/screen_home.o: $(VERFILE)
+# (placed after `all` so it doesn't hijack the default goal). Must list EVERY
+# .c that references BUILD_VERSION, else the binary ships mixed/stale version
+# strings (e.g. the Settings "About" line lagging a release).
+$(BUILDDIR)/update_check.o $(BUILDDIR)/screen_home.o \
+$(BUILDDIR)/screen_settings.o $(BUILDDIR)/pwa_server.o: $(VERFILE)
 
 $(BUILDDIR)/%.o: %.c
 	@mkdir -p $(dir $@)
