@@ -22,6 +22,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
+#include <ctype.h>
 
 weather_state_t weather_state = {0};
 
@@ -195,7 +196,79 @@ static int parse_buienradar(const char * body) {
             memmove(p + 1, p + 6, strlen(p + 6) + 1);
         }
     }
+
+    /* 5-day forecast — Forecast.FiveDayForecast is exactly what buienradar.nl
+       renders (icon codes, temps, descriptions), so it drives the daily strip.
+       (The per-location forecast endpoint sometimes disagrees — e.g. serving a
+       haze code where the site shows partly cloudy.) The feed carries no usable
+       wind force, so the strip shows wind direction only. */
+    const char * fc = strstr(body, "\"FiveDayForecast\":[");
+    if (fc) {
+        const char * walk = fc;
+        int dn = 0;
+        for (int i = 0; i < WEATHER_FORECAST_DAYS; i++) {
+            const char * ds = strstr(walk, "\"Day\":\"");
+            if (!ds) break;
+            const char * de = strstr(ds + 7, "\"Day\":\"");
+            const char * dend = de ? de : end;
+            weather_day_t * dst = &weather_state.days[i];
+            char iso[32];
+            if (js_str(ds, dend, "Day", iso, sizeof iso))
+                format_day_label(iso, dst->day, sizeof dst->day);
+            dst->min_temp    = (float)js_num(ds, dend, "MinTemperature", 0);
+            dst->max_temp    = (float)js_num(ds, dend, "MaxTemperature", 0);
+            dst->rain_chance = (int)js_num(ds, dend, "RainChance", 0);
+            dst->wind_bft    = 0;
+            js_str(ds, dend, "WindDirection", dst->wind_dir, sizeof dst->wind_dir);
+            for (int k = 0; dst->wind_dir[k]; k++)
+                if (dst->wind_dir[k] >= 'a' && dst->wind_dir[k] <= 'z')
+                    dst->wind_dir[k] -= 32;
+            js_str(ds, dend, "WeatherDescription", dst->desc, sizeof dst->desc);
+            /* icon code from IconUrl (.../30x30/f.png -> "f"). */
+            char url[160];
+            if (js_str(ds, dend, "IconUrl", url, sizeof url)) {
+                const char * sl = strrchr(url, '/');
+                const char * fn = sl ? sl + 1 : url;
+                size_t fl = strlen(fn);
+                if (fl > 4 && fn[fl - 4] == '.') {
+                    size_t cl = fl - 4;
+                    if (cl >= sizeof dst->icon) cl = sizeof dst->icon - 1;
+                    memcpy(dst->icon, fn, cl); dst->icon[cl] = 0;
+                }
+            }
+            dn = i + 1;
+            walk = dend;
+        }
+        if (dn > 0) { weather_state.day_count = dn; got = 1; }
+    }
     return got ? 0 : -1;
+}
+
+/* Buienradar's own weather-icon PNGs (transparent), so the forecast strips show
+   the exact icons the website uses instead of mapping letter codes onto local
+   artwork. The icon set is static, so each code is fetched ONCE and cached
+   persistently under $TOONUI_DATA_DIR (/mnt/data) — it survives reboots and is
+   never re-downloaded. A failure just leaves the screens on local icons. */
+static void download_wx_icon(const char * code) {
+    if (!code || !code[0]) return;
+    const char * dir = getenv("TOONUI_DATA_DIR");
+    if (!dir || !*dir) dir = "/mnt/data";
+    char path[128];
+    snprintf(path, sizeof path, "%s/wx_%s.png", dir, code);
+    if (access(path, F_OK) == 0) return;            /* already cached — done */
+    char up[8]; size_t j = 0;
+    for (; code[j] && j < sizeof up - 1; j++) up[j] = (char)toupper((unsigned char)code[j]);
+    up[j] = 0;
+    char cmd[768];
+    snprintf(cmd, sizeof cmd,
+        "/usr/bin/curl -s -k -L --max-time 8 -A 'toonui/1.0' -o '%s.tmp' "
+        "'https://cdn.buienradar.nl/resources/images/icons/weather/96x96/%s.png' "
+        "&& mv '%s.tmp' '%s'", path, up, path, path);
+    (void)system(cmd);
+}
+static void download_wx_icons(void) {
+    for (int i = 0; i < weather_state.day_count; i++)  download_wx_icon(weather_state.days[i].icon);
+    for (int i = 0; i < weather_state.hour_count; i++) download_wx_icon(weather_state.hours[i].icon);
 }
 
 /* Hourly forecast fetcher — calls forecast.buienradar.nl with the
@@ -541,6 +614,9 @@ static void * wx_thread(void * arg) {
             synth_weatherreport();
 
         weather_state.connected = (fc_ok == 0) || feed_ok;
+
+        /* Cache buienradar's own icon PNGs for the codes we're about to show. */
+        download_wx_icons();
 
         /* Refresh the radar GIF a few times (5-min cadence) whenever we have a
          * URL, then loop back to re-poll the JSON. */

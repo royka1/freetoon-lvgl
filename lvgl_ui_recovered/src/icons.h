@@ -93,6 +93,11 @@ extern const lv_img_dsc_t icon_trash_lg;
 const lv_img_dsc_t * weather_icon_for(const char * letter);
 const lv_img_dsc_t * weather_icon_for_lg(const char * letter);
 
+/* Buienradar's own (transparent) weather-icon PNG path for `code`, if the
+   weather thread has cached it; returns 1 + fills `out` with the LVGL FS path,
+   else 0 so the caller falls back to the local vector icon above. */
+int weather_icon_png(const char * code, char * out, size_t n);
+
 /* RGB tint to apply via lv_obj_set_style_img_recolor when rendering the
  * weather icon. Sun = warm yellow, rain = steel blue, thunder = amber,
  * snow = ice-white, fog = grey, cloud = soft blue-grey. */

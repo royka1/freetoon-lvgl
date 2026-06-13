@@ -52,6 +52,24 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+
+/* If buienradar's own icon for `code` has been cached ($TOONUI_DATA_DIR/
+   wx_<code>.png, /mnt/data by default, written once by the weather thread),
+   fill `out` with its LVGL FS path and return 1; else return 0 so the caller
+   falls back to the local vector icon. */
+int weather_icon_png(const char * code, char * out, size_t n) {
+    if (!code || !code[0]) return 0;
+    const char * dir = getenv("TOONUI_DATA_DIR");
+    if (!dir || !*dir) dir = "/mnt/data";
+    char path[128];
+    snprintf(path, sizeof path, "%s/wx_%s.png", dir, code);
+    if (access(path, F_OK) != 0) return 0;
+    snprintf(out, n, "S:%s/wx_%s.png", dir, code);
+    return 1;
+}
 
 int wind_dir_angle(const char * dir) {
     if (!dir || !*dir) return -1;
