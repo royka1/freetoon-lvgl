@@ -1240,6 +1240,17 @@ static int handle_settings_get(int fd) {
     return sock_send_all(fd, body, n);
 }
 
+/* Bounded copy of a form value into a fixed-size settings field. Truncation is
+   intended (the field caps the length); using this instead of
+   snprintf(dst, n, "%s", src) avoids the -Wformat-truncation noise when src is
+   a 255-byte form buffer copied into a smaller field. */
+static void copy_field(char * dst, size_t n, const char * src) {
+    if (n == 0) return;
+    size_t i = 0;
+    for (; i + 1 < n && src[i]; i++) dst[i] = src[i];
+    dst[i] = '\0';
+}
+
 static int handle_settings_post(int fd, const char * body) {
     int iv; char sv[256];
     if (extract_int(body, "auto_dim_enabled", &iv))   settings.auto_dim_enabled = !!iv;
@@ -1252,20 +1263,20 @@ static int handle_settings_post(int fd, const char * body) {
     if (extract_int(body, "show_dim_waste", &iv))     settings.show_dim_waste = !!iv;
     if (extract_int(body, "dim_waste_lead_days", &iv))settings.dim_waste_lead_days = iv < 0 ? 0 : (iv > 7 ? 7 : iv);
     if (extract_str(body, "waste_postcode", sv, sizeof sv))
-        snprintf(settings.waste_postcode, sizeof settings.waste_postcode, "%s", sv);
+        copy_field(settings.waste_postcode, sizeof settings.waste_postcode, sv);
     if (extract_str(body, "waste_housenr", sv, sizeof sv))
-        snprintf(settings.waste_housenr, sizeof settings.waste_housenr, "%s", sv);
+        copy_field(settings.waste_housenr, sizeof settings.waste_housenr, sv);
     if (extract_int(body, "waste_provider", &iv)) settings.waste_provider = !!iv;
     if (extract_str(body, "waste_ics_url", sv, sizeof sv))
-        snprintf(settings.waste_ics_url, sizeof settings.waste_ics_url, "%s", sv);
+        copy_field(settings.waste_ics_url, sizeof settings.waste_ics_url, sv);
     if (extract_str(body, "waste_plugin", sv, sizeof sv))
-        snprintf(settings.waste_plugin, sizeof settings.waste_plugin, "%s", sv);
+        copy_field(settings.waste_plugin, sizeof settings.waste_plugin, sv);
     if (extract_str(body, "waste_icsid", sv, sizeof sv))
-        snprintf(settings.waste_icsid, sizeof settings.waste_icsid, "%s", sv);
+        copy_field(settings.waste_icsid, sizeof settings.waste_icsid, sv);
     if (extract_str(body, "waste_street", sv, sizeof sv))
-        snprintf(settings.waste_street, sizeof settings.waste_street, "%s", sv);
+        copy_field(settings.waste_street, sizeof settings.waste_street, sv);
     if (extract_str(body, "waste_city", sv, sizeof sv))
-        snprintf(settings.waste_city, sizeof settings.waste_city, "%s", sv);
+        copy_field(settings.waste_city, sizeof settings.waste_city, sv);
     if (extract_int(body, "forecast_mode", &iv))      settings.forecast_mode = iv;
     if (extract_int(body, "mqtt_port", &iv))          settings.mqtt_port = iv;
     if (extract_int(body, "enable_p1_elec", &iv))     { /* deprecated — ignore, P1 is now derived from source */ }
@@ -1274,11 +1285,11 @@ static int handle_settings_post(int fd, const char * body) {
     if (extract_int(body, "enable_ha", &iv))          settings.enable_ha = !!iv;
     if (extract_int(body, "enable_domoticz", &iv))    settings.enable_domoticz = !!iv;
     if (extract_str(body, "domoticz_host", sv, sizeof sv))
-        snprintf(settings.domoticz_host, sizeof settings.domoticz_host, "%s", sv);
+        copy_field(settings.domoticz_host, sizeof settings.domoticz_host, sv);
     if (extract_str(body, "domoticz_user", sv, sizeof sv))
-        snprintf(settings.domoticz_user, sizeof settings.domoticz_user, "%s", sv);
+        copy_field(settings.domoticz_user, sizeof settings.domoticz_user, sv);
     if (extract_str(body, "domoticz_pass", sv, sizeof sv))
-        snprintf(settings.domoticz_pass, sizeof settings.domoticz_pass, "%s", sv);
+        copy_field(settings.domoticz_pass, sizeof settings.domoticz_pass, sv);
     if (extract_int(body, "enable_zwave", &iv))       settings.enable_zwave = !!iv;
     if (extract_int(body, "vnc_enabled", &iv))        settings.vnc_enabled = !!iv;
     if (extract_int(body, "hide_offline_tiles", &iv)) settings.hide_offline_tiles = !!iv;
@@ -1290,17 +1301,17 @@ static int handle_settings_post(int fd, const char * body) {
      * accepting them here keeps the slave UI in sync with the master cfg. */
     if (extract_int(body, "pwa_login_enabled", &iv))  settings.pwa_login_enabled = !!iv;
     if (extract_str(body, "pwa_login_user", sv, sizeof sv) && sv[0])
-        snprintf(settings.pwa_login_user, sizeof settings.pwa_login_user, "%s", sv);
+        copy_field(settings.pwa_login_user, sizeof settings.pwa_login_user, sv);
     /* Only accept a NON-EMPTY password here. The WASM slave always includes
      * pwa_login_pass in its settings_save() blob (empty when it has none), so
      * accepting "" would wipe a password just set via /set-password — which is
      * exactly what made the login never stick. The password is set/cleared only
      * through the dedicated /set-password flow, never a routine slave sync. */
     if (extract_str(body, "pwa_login_pass", sv, sizeof sv) && sv[0])
-        snprintf(settings.pwa_login_pass, sizeof settings.pwa_login_pass, "%s", sv);
+        copy_field(settings.pwa_login_pass, sizeof settings.pwa_login_pass, sv);
     if (extract_int(body, "pin_enabled", &iv))        settings.pin_enabled = !!iv;
     if (extract_str(body, "pin_code", sv, sizeof sv))
-        snprintf(settings.pin_code, sizeof settings.pin_code, "%s", sv);
+        copy_field(settings.pin_code, sizeof settings.pin_code, sv);
     /* City name is authoritative: when it changes, auto-resolve the Buienradar
      * location id (Open-Meteo geocoding). Only fall back to a manually-entered
      * id when the city is unchanged, so the id field still allows an override. */
@@ -1308,7 +1319,7 @@ static int handle_settings_post(int fd, const char * body) {
         int city_changed = 0;
         if (extract_str(body, "weather_location", sv, sizeof sv)) {
             city_changed = strcmp(sv, settings.weather_location) != 0;
-            snprintf(settings.weather_location, sizeof settings.weather_location, "%s", sv);
+            copy_field(settings.weather_location, sizeof settings.weather_location, sv);
         }
         if (city_changed && settings.weather_location[0]) {
             int gid = weather_geocode(settings.weather_location);
@@ -1318,79 +1329,79 @@ static int handle_settings_post(int fd, const char * body) {
         }
     }
     if (extract_str(body, "ot_bridge_mode", sv, sizeof sv))
-        snprintf(settings.ot_bridge_mode, sizeof settings.ot_bridge_mode, "%s", sv);
+        copy_field(settings.ot_bridge_mode, sizeof settings.ot_bridge_mode, sv);
     if (extract_str(body, "otgw_host", sv, sizeof sv))
-        snprintf(settings.otgw_host, sizeof settings.otgw_host, "%s", sv);
+        copy_field(settings.otgw_host, sizeof settings.otgw_host, sv);
     if (extract_str(body, "mqtt_host", sv, sizeof sv))
-        snprintf(settings.mqtt_host, sizeof settings.mqtt_host, "%s", sv);
+        copy_field(settings.mqtt_host, sizeof settings.mqtt_host, sv);
     if (extract_str(body, "mqtt_user", sv, sizeof sv))
-        snprintf(settings.mqtt_user, sizeof settings.mqtt_user, "%s", sv);
+        copy_field(settings.mqtt_user, sizeof settings.mqtt_user, sv);
     if (extract_int(body, "client_mode", &iv))        settings.client_mode = !!iv;
     if (extract_str(body, "master_host", sv, sizeof sv))
-        snprintf(settings.master_host, sizeof settings.master_host, "%s", sv);
+        copy_field(settings.master_host, sizeof settings.master_host, sv);
     /* Home Assistant host + Life360 + curtain entities */
     if (extract_str(body, "ha_host", sv, sizeof sv))
-        snprintf(settings.ha_host, sizeof settings.ha_host, "%s", sv);
+        copy_field(settings.ha_host, sizeof settings.ha_host, sv);
     if (extract_str(body, "life360_a_entity", sv, sizeof sv))
-        snprintf(settings.life360_a_entity, sizeof settings.life360_a_entity, "%s", sv);
+        copy_field(settings.life360_a_entity, sizeof settings.life360_a_entity, sv);
     if (extract_str(body, "life360_a_name", sv, sizeof sv))
-        snprintf(settings.life360_a_name, sizeof settings.life360_a_name, "%s", sv);
+        copy_field(settings.life360_a_name, sizeof settings.life360_a_name, sv);
     if (extract_str(body, "life360_b_entity", sv, sizeof sv))
-        snprintf(settings.life360_b_entity, sizeof settings.life360_b_entity, "%s", sv);
+        copy_field(settings.life360_b_entity, sizeof settings.life360_b_entity, sv);
     if (extract_str(body, "life360_b_name", sv, sizeof sv))
-        snprintf(settings.life360_b_name, sizeof settings.life360_b_name, "%s", sv);
+        copy_field(settings.life360_b_name, sizeof settings.life360_b_name, sv);
     if (extract_str(body, "curtain_entity", sv, sizeof sv))
-        snprintf(settings.curtain_entity, sizeof settings.curtain_entity, "%s", sv);
+        copy_field(settings.curtain_entity, sizeof settings.curtain_entity, sv);
     if (extract_str(body, "curtain_bat_a", sv, sizeof sv))
-        snprintf(settings.curtain_bat_a, sizeof settings.curtain_bat_a, "%s", sv);
+        copy_field(settings.curtain_bat_a, sizeof settings.curtain_bat_a, sv);
     if (extract_str(body, "curtain_bat_b", sv, sizeof sv))
-        snprintf(settings.curtain_bat_b, sizeof settings.curtain_bat_b, "%s", sv);
+        copy_field(settings.curtain_bat_b, sizeof settings.curtain_bat_b, sv);
     if (extract_str(body, "doorbell_entity", sv, sizeof sv))
-        snprintf(settings.doorbell_entity, sizeof settings.doorbell_entity, "%s", sv);
+        copy_field(settings.doorbell_entity, sizeof settings.doorbell_entity, sv);
     if (extract_str(body, "doorbell_camera", sv, sizeof sv))
-        snprintf(settings.doorbell_camera, sizeof settings.doorbell_camera, "%s", sv);
+        copy_field(settings.doorbell_camera, sizeof settings.doorbell_camera, sv);
     if (extract_int(body, "doorbell_seconds", &iv))
         settings.doorbell_seconds = (iv < 3 || iv > 300) ? 30 : iv;
     if (extract_str(body, "doorbell_stream_url", sv, sizeof sv))
-        snprintf(settings.doorbell_stream_url, sizeof settings.doorbell_stream_url, "%s", sv);
+        copy_field(settings.doorbell_stream_url, sizeof settings.doorbell_stream_url, sv);
     /* Integration LAN hosts */
     if (extract_str(body, "p1_elec_host", sv, sizeof sv))
-        snprintf(settings.p1_elec_host, sizeof settings.p1_elec_host, "%s", sv);
+        copy_field(settings.p1_elec_host, sizeof settings.p1_elec_host, sv);
     if (extract_str(body, "p1_water_host", sv, sizeof sv))
-        snprintf(settings.p1_water_host, sizeof settings.p1_water_host, "%s", sv);
+        copy_field(settings.p1_water_host, sizeof settings.p1_water_host, sv);
     if (extract_str(body, "vent_host", sv, sizeof sv))
-        snprintf(settings.vent_host, sizeof settings.vent_host, "%s", sv);
+        copy_field(settings.vent_host, sizeof settings.vent_host, sv);
     if (extract_str(body, "opnsense_host", sv, sizeof sv))
-        snprintf(settings.opnsense_host, sizeof settings.opnsense_host, "%s", sv);
+        copy_field(settings.opnsense_host, sizeof settings.opnsense_host, sv);
     if (extract_int(body, "energy_elec_source", &iv)) settings.energy_elec_source = (iv < 0 || iv > ENERGY_SRC_MAX) ? ENERGY_SRC_ZWAVE : iv;
     if (extract_int(body, "energy_gas_source", &iv))  settings.energy_gas_source  = (iv < 0 || iv > ENERGY_SRC_MAX) ? ENERGY_SRC_ZWAVE : iv;
     if (extract_int(body, "energy_water_source", &iv))settings.energy_water_source = (iv < 0 || iv > ENERGY_SRC_MAX) ? ENERGY_SRC_OFF   : iv;
     if (extract_int(body, "energy_elec_dz_idx", &iv))  settings.energy_elec_dz_idx  = iv;
     if (extract_int(body, "energy_gas_dz_idx", &iv))   settings.energy_gas_dz_idx   = iv;
     if (extract_int(body, "energy_water_dz_idx", &iv)) settings.energy_water_dz_idx = iv;
-    if (extract_str(body, "energy_elec_ha_entity", sv, sizeof sv)) snprintf(settings.energy_elec_ha_entity, sizeof settings.energy_elec_ha_entity, "%s", sv);
-    if (extract_str(body, "energy_gas_ha_entity", sv, sizeof sv))  snprintf(settings.energy_gas_ha_entity, sizeof settings.energy_gas_ha_entity, "%s", sv);
-    if (extract_str(body, "energy_water_ha_entity", sv, sizeof sv))snprintf(settings.energy_water_ha_entity, sizeof settings.energy_water_ha_entity, "%s", sv);
+    if (extract_str(body, "energy_elec_ha_entity", sv, sizeof sv)) copy_field(settings.energy_elec_ha_entity, sizeof settings.energy_elec_ha_entity, sv);
+    if (extract_str(body, "energy_gas_ha_entity", sv, sizeof sv))  copy_field(settings.energy_gas_ha_entity, sizeof settings.energy_gas_ha_entity, sv);
+    if (extract_str(body, "energy_water_ha_entity", sv, sizeof sv))copy_field(settings.energy_water_ha_entity, sizeof settings.energy_water_ha_entity, sv);
     /* Auto-update */
     if (extract_int(body, "auto_update_enabled", &iv))settings.auto_update_enabled = !!iv;
     if (extract_int(body, "auto_update_hour", &iv))   settings.auto_update_hour = (iv < 0 || iv > 23) ? 2 : iv;
     /* Newsreader */
     if (extract_int(body, "news_enabled", &iv))       settings.news_enabled = !!iv;
     if (extract_str(body, "news_rss_url", sv, sizeof sv))
-        snprintf(settings.news_rss_url, sizeof settings.news_rss_url, "%s", sv);
+        copy_field(settings.news_rss_url, sizeof settings.news_rss_url, sv);
     int cal_touched = 0;
     if (extract_int(body, "calendar_enabled", &iv)) { settings.calendar_enabled = !!iv; cal_touched = 1; }
     if (extract_str(body, "calendar_ha_entity", sv, sizeof sv)) {
-        snprintf(settings.calendar_ha_entity, sizeof settings.calendar_ha_entity, "%s", sv); cal_touched = 1; }
+        copy_field(settings.calendar_ha_entity, sizeof settings.calendar_ha_entity, sv); cal_touched = 1; }
     if (extract_str(body, "calendar_ics_url", sv, sizeof sv)) {
-        snprintf(settings.calendar_ics_url, sizeof settings.calendar_ics_url, "%s", sv); cal_touched = 1; }
+        copy_field(settings.calendar_ics_url, sizeof settings.calendar_ics_url, sv); cal_touched = 1; }
     if (cal_touched) { extern void calendar_refresh_async(void); calendar_refresh_async(); }
     if (extract_int(body, "news_scroll_speed", &iv)) settings.news_scroll_speed = (iv > 0 && iv < 30) ? 30 : (iv > 150 ? 150 : iv);
     /* Tile auto-rotate */
     if (extract_int(body, "tile_rotate_enabled", &iv))settings.tile_rotate_enabled = !!iv;
     if (extract_int(body, "tile_rotate_seconds", &iv))settings.tile_rotate_seconds = iv < 3 ? 3 : (iv > 120 ? 120 : iv);
     if (extract_str(body, "tile_rotate_members", sv, sizeof sv))
-        snprintf(settings.tile_rotate_members, sizeof settings.tile_rotate_members, "%s", sv);
+        copy_field(settings.tile_rotate_members, sizeof settings.tile_rotate_members, sv);
     settings_save();
     return send_status(fd, 200, "OK", "{\"ok\":1,\"note\":\"some changes apply after a toonui restart\"}");
 }
@@ -1833,8 +1844,8 @@ static int handle_setpass_post(int fd, const char * body) {
     if (strcmp(pass, pass2) != 0)
         return handle_setpass_get(fd, "<div class=err>Passwords don't match.</div>");
     /* Persist + auto-login. */
-    snprintf(settings.pwa_login_user, sizeof settings.pwa_login_user, "%s", user);
-    snprintf(settings.pwa_login_pass, sizeof settings.pwa_login_pass, "%s", pass);
+    copy_field(settings.pwa_login_user, sizeof settings.pwa_login_user, user);
+    copy_field(settings.pwa_login_pass, sizeof settings.pwa_login_pass, pass);
     settings_save();
     return handle_login_post(fd, body);
 }
