@@ -163,7 +163,7 @@ lv_obj_t * screen_forecast_create(void) {
     /* Buienradar attribution — their free API asks for a source credit/link.
        There's no browser on the device, so we show the URL as text. */
     lv_obj_t * credit = lv_label_create(scr_root);
-    lv_label_set_text(credit, "Weergegevens: Buienradar.nl");
+    lv_label_set_text(credit, "Bron: Buienradar.nl");
     lv_obj_set_style_text_color(credit, lv_color_hex(0x5aaadf), 0);
     lv_obj_set_style_text_font(credit, SF(16), 0);
     lv_obj_align(credit, LV_ALIGN_TOP_RIGHT, -16, 26);
