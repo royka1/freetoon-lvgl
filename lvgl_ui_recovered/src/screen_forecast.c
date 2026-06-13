@@ -161,6 +161,14 @@ lv_obj_t * screen_forecast_create(void) {
     lv_obj_set_style_text_font(bl, SF(22), 0);
     lv_obj_center(bl);
 
+    /* Buienradar attribution — their free API asks for a source credit/link.
+       There's no browser on the device, so we show the URL as text. */
+    lv_obj_t * credit = lv_label_create(scr_root);
+    lv_label_set_text(credit, "Weergegevens: Buienradar.nl");
+    lv_obj_set_style_text_color(credit, lv_color_hex(0x5aaadf), 0);
+    lv_obj_set_style_text_font(credit, SF(16), 0);
+    lv_obj_align(credit, LV_ALIGN_TOP_RIGHT, -16, 26);
+
     /* Radar image — buienradar serves a 500x512 PNG of the Netherlands
        precipitation map. Our weather thread saves it to disk every 5 min;
        we render via LVGL's stdio FS driver + PNG decoder. */
