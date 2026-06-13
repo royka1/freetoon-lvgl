@@ -131,6 +131,17 @@ static int is_night_code(const char * letter) {
 static void set_forecast_icon(lv_obj_t * cloud, lv_obj_t * sun,
                               const char * letter) {
     if (!cloud) return;
+    /* buienradar's own icon (exact website match) when it's been cached — one
+       full-colour PNG, so the composed cloud+sun overlay is hidden. */
+    char ip[96];
+    if (weather_icon_png(letter, ip, sizeof ip)) {
+        lv_img_set_src(cloud, ip);
+        lv_obj_set_style_img_recolor_opa(cloud, 0, 0);
+        lv_img_set_zoom(cloud, 160);                       /* 96px -> ~60px */
+        if (sun) lv_obj_add_flag(sun, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_set_style_img_recolor_opa(cloud, 255, 0);       /* restore for fallback */
     int is_night   = is_night_code(letter);
     int is_partly  = letter && (letter[0] == 'b' || letter[0] == 'j');
     int is_thunder = letter && (letter[0] == 'g' || letter[0] == 'm');

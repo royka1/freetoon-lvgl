@@ -426,9 +426,7 @@ static void refresh_cb(lv_timer_t * t) {
             int si = i + 1;
             if (si < weather_state.hour_count) {
                 const weather_hour_t * h = &weather_state.hours[si];
-                lv_img_set_src(dim_fc_icon[i], weather_icon_for(h->icon));
-                lv_obj_set_style_img_recolor(dim_fc_icon[i],
-                    lv_color_hex(weather_icon_color_for(h->icon)), 0);
+                weather_set_tile_icon(dim_fc_icon[i], h->icon, 40);
                 lv_label_set_text(dim_fc_day[i], h->label);
                 if (h->wind_dir[0])
                     lv_label_set_text_fmt(dim_fc_temp[i], "%.0f°C  %s%d",
@@ -442,9 +440,7 @@ static void refresh_cb(lv_timer_t * t) {
                 int di = si - weather_state.hour_count;
                 if (di < weather_state.day_count) {
                     const weather_day_t * d = &weather_state.days[di];
-                    lv_img_set_src(dim_fc_icon[i], weather_icon_for(d->icon));
-                    lv_obj_set_style_img_recolor(dim_fc_icon[i],
-                        lv_color_hex(weather_icon_color_for(d->icon)), 0);
+                    weather_set_tile_icon(dim_fc_icon[i], d->icon, 40);
                     lv_label_set_text(dim_fc_day[i], d->day);
                     if (d->wind_dir[0])
                         lv_label_set_text_fmt(dim_fc_temp[i], "%.0f/%.0f  %s%d",
@@ -458,9 +454,7 @@ static void refresh_cb(lv_timer_t * t) {
             }
         } else if (i < weather_state.day_count) {
             const weather_day_t * d = &weather_state.days[i];
-            lv_img_set_src(dim_fc_icon[i], weather_icon_for(d->icon));
-            lv_obj_set_style_img_recolor(dim_fc_icon[i],
-                lv_color_hex(weather_icon_color_for(d->icon)), 0);
+            weather_set_tile_icon(dim_fc_icon[i], d->icon, 40);
             lv_label_set_text(dim_fc_day[i], d->day);
             if (d->wind_dir[0])
                 lv_label_set_text_fmt(dim_fc_temp[i], "%.0f/%.0f  %s%d",

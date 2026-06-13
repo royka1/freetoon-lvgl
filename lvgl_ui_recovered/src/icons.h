@@ -98,6 +98,10 @@ const lv_img_dsc_t * weather_icon_for_lg(const char * letter);
    else 0 so the caller falls back to the local vector icon above. */
 int weather_icon_png(const char * code, char * out, size_t n);
 
+/* Set an lv_img to buienradar's own icon PNG for `code` (scaled to ~`px`),
+   falling back to the recoloured local vector icon if it isn't cached yet. */
+void weather_set_tile_icon(lv_obj_t * img, const char * code, int px);
+
 /* RGB tint to apply via lv_obj_set_style_img_recolor when rendering the
  * weather icon. Sun = warm yellow, rain = steel blue, thunder = amber,
  * snow = ice-white, fog = grey, cloud = soft blue-grey. */

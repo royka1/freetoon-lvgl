@@ -197,50 +197,6 @@ static int parse_buienradar(const char * body) {
         }
     }
 
-    /* 5-day forecast — Forecast.FiveDayForecast is exactly what buienradar.nl
-       renders (icon codes, temps, descriptions), so it drives the daily strip.
-       (The per-location forecast endpoint sometimes disagrees — e.g. serving a
-       haze code where the site shows partly cloudy.) The feed carries no usable
-       wind force, so the strip shows wind direction only. */
-    const char * fc = strstr(body, "\"FiveDayForecast\":[");
-    if (fc) {
-        const char * walk = fc;
-        int dn = 0;
-        for (int i = 0; i < WEATHER_FORECAST_DAYS; i++) {
-            const char * ds = strstr(walk, "\"Day\":\"");
-            if (!ds) break;
-            const char * de = strstr(ds + 7, "\"Day\":\"");
-            const char * dend = de ? de : end;
-            weather_day_t * dst = &weather_state.days[i];
-            char iso[32];
-            if (js_str(ds, dend, "Day", iso, sizeof iso))
-                format_day_label(iso, dst->day, sizeof dst->day);
-            dst->min_temp    = (float)js_num(ds, dend, "MinTemperature", 0);
-            dst->max_temp    = (float)js_num(ds, dend, "MaxTemperature", 0);
-            dst->rain_chance = (int)js_num(ds, dend, "RainChance", 0);
-            dst->wind_bft    = 0;
-            js_str(ds, dend, "WindDirection", dst->wind_dir, sizeof dst->wind_dir);
-            for (int k = 0; dst->wind_dir[k]; k++)
-                if (dst->wind_dir[k] >= 'a' && dst->wind_dir[k] <= 'z')
-                    dst->wind_dir[k] -= 32;
-            js_str(ds, dend, "WeatherDescription", dst->desc, sizeof dst->desc);
-            /* icon code from IconUrl (.../30x30/f.png -> "f"). */
-            char url[160];
-            if (js_str(ds, dend, "IconUrl", url, sizeof url)) {
-                const char * sl = strrchr(url, '/');
-                const char * fn = sl ? sl + 1 : url;
-                size_t fl = strlen(fn);
-                if (fl > 4 && fn[fl - 4] == '.') {
-                    size_t cl = fl - 4;
-                    if (cl >= sizeof dst->icon) cl = sizeof dst->icon - 1;
-                    memcpy(dst->icon, fn, cl); dst->icon[cl] = 0;
-                }
-            }
-            dn = i + 1;
-            walk = dend;
-        }
-        if (dn > 0) { weather_state.day_count = dn; got = 1; }
-    }
     return got ? 0 : -1;
 }
 

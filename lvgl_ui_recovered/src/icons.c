@@ -71,6 +71,26 @@ int weather_icon_png(const char * code, char * out, size_t n) {
     return 1;
 }
 
+/* Point an lv_img at buienradar's own icon PNG for `code` (an exact match to the
+   website), scaled to roughly `px` pixels; falls back to the recoloured local
+   vector icon if the PNG hasn't been cached yet. */
+void weather_set_tile_icon(lv_obj_t * img, const char * code, int px) {
+    if (!img) return;
+    char ip[96];
+    if (weather_icon_png(code, ip, sizeof ip)) {
+        lv_img_set_src(img, ip);
+        lv_obj_set_style_img_recolor_opa(img, 0, 0);            /* full-colour PNG */
+        lv_img_set_zoom(img, px > 0 ? px * 256 / 96 : 256);
+    } else {
+        const lv_img_dsc_t * d = weather_icon_for_lg(code);
+        lv_img_set_src(img, d);
+        lv_obj_set_style_img_recolor(img, lv_color_hex(weather_icon_color_for(code)), 0);
+        lv_obj_set_style_img_recolor_opa(img, 255, 0);
+        int nw = (d && d->header.w) ? (int)d->header.w : 80;
+        lv_img_set_zoom(img, px > 0 ? px * 256 / nw : 256);
+    }
+}
+
 int wind_dir_angle(const char * dir) {
     if (!dir || !*dir) return -1;
     /* Buienradar codes (Dutch): N/O/Z/W. Two-letter combos for diagonals,

@@ -53,17 +53,7 @@ static void on_radar_zoom(lv_event_t * e) {
    website), falling back to the recoloured local vector icon if it hasn't been
    downloaded yet. */
 static void wx_set_tile_icon(lv_obj_t * img, const char * code) {
-    char ip[64];
-    if (weather_icon_png(code, ip, sizeof ip)) {
-        lv_img_set_src(img, ip);
-        lv_obj_set_style_img_recolor_opa(img, 0, 0);        /* full-colour PNG */
-        lv_img_set_zoom(img, DISP_VER < 600 ? 128 : 170);   /* 96px src -> ~48/64px */
-    } else {
-        lv_img_set_src(img, weather_icon_for_lg(code));
-        lv_obj_set_style_img_recolor(img, lv_color_hex(weather_icon_color_for(code)), 0);
-        lv_obj_set_style_img_recolor_opa(img, 255, 0);
-        lv_img_set_zoom(img, DISP_VER < 600 ? 160 : 256);
-    }
+    weather_set_tile_icon(img, code, DISP_VER < 600 ? 48 : 64);
 }
 
 static void refresh_cb(lv_timer_t * t) {
