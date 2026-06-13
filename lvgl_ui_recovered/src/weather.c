@@ -223,6 +223,7 @@ static void download_wx_icon(const char * code) {
     (void)system(cmd);
 }
 static void download_wx_icons(void) {
+    download_wx_icon(weather_state.current_icon);
     for (int i = 0; i < weather_state.day_count; i++)  download_wx_icon(weather_state.days[i].icon);
     for (int i = 0; i < weather_state.hour_count; i++) download_wx_icon(weather_state.hours[i].icon);
 }

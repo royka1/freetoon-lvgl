@@ -57,6 +57,7 @@ static lv_obj_t * dim_img_faucet;  /* DHW faucet — visible only on dhw_on */
 static lv_obj_t * dim_img_drop;    /* paired water-drop next to the faucet */
 static lv_obj_t * wx_icon = NULL;
 static lv_obj_t * lbl_outside = NULL;
+static lv_obj_t * lbl_outside_wind = NULL;
 static lv_obj_t * waste_icon = NULL;
 static lv_obj_t * lbl_waste = NULL;
 static lv_obj_t * waste_box_ptr = NULL;
@@ -362,9 +363,7 @@ static void refresh_cb(lv_timer_t * t) {
     if (wx_icon) {
         if (settings.show_dim_weather && weather_state.day_count > 0) {
             const char * ic = weather_state.days[0].icon;
-            lv_img_set_src(wx_icon, weather_icon_for_lg(ic));
-            lv_obj_set_style_img_recolor(wx_icon,
-                lv_color_hex(weather_icon_color_for(ic)), 0);
+            weather_set_tile_icon(wx_icon, ic, 72);
             lv_obj_clear_flag(wx_icon, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(wx_icon, LV_OBJ_FLAG_HIDDEN);
@@ -485,12 +484,24 @@ static void refresh_cb(lv_timer_t * t) {
     }
     if (wx_icon) {
         if (settings.show_dim_weather && weather_state.connected) {
-            lv_img_set_src(wx_icon, weather_icon_for_lg(weather_state.current_icon));
+            weather_set_tile_icon(wx_icon, weather_state.current_icon, 72);
             lv_obj_clear_flag(wx_icon, LV_OBJ_FLAG_HIDDEN);
             if (lbl_outside) lv_obj_clear_flag(lbl_outside, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(wx_icon, LV_OBJ_FLAG_HIDDEN);
             if (lbl_outside) lv_obj_add_flag(lbl_outside, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    /* Current wind — from the nearest hourly slot (the live feed's "now"). */
+    if (lbl_outside_wind) {
+        if (settings.show_dim_weather && weather_state.connected &&
+            weather_state.hour_count > 0 && weather_state.hours[0].wind_dir[0]) {
+            lv_label_set_text_fmt(lbl_outside_wind, "%s %d Bft",
+                                  weather_state.hours[0].wind_dir,
+                                  weather_state.hours[0].wind_bft);
+            lv_obj_clear_flag(lbl_outside_wind, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(lbl_outside_wind, LV_OBJ_FLAG_HIDDEN);
         }
     }
 
@@ -781,6 +792,17 @@ lv_obj_t * screen_dim_create(void) {
     lv_obj_set_width(lbl_outside, SX(210));
     lv_obj_set_style_text_align(lbl_outside, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(lbl_outside, LV_ALIGN_TOP_RIGHT, SX(-56), SY(237));
+
+    /* Current wind, tucked under the temperature (icon + temp + wind read as
+       the "now" group; "Buiten" stays the caption below). */
+    lbl_outside_wind = lv_label_create(scr_root);
+    lv_obj_set_style_text_color(lbl_outside_wind, lv_color_hex(0x99aabb), 0);
+    lv_obj_set_style_text_font(lbl_outside_wind, &lv_font_montserrat_18, 0);
+    lv_label_set_text(lbl_outside_wind, "");
+    lv_obj_set_width(lbl_outside_wind, SX(180));
+    lv_obj_set_style_text_align(lbl_outside_wind, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(lbl_outside_wind, LV_ALIGN_TOP_RIGHT, SX(-48), SY(158));
+    lv_obj_add_flag(lbl_outside_wind, LV_OBJ_FLAG_HIDDEN);
 
     /* Life360 — sits under the outside temp on the right edge, mirroring
      * the Family tile on the home screen. Right-aligned so longer street
