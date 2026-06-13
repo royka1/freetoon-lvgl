@@ -844,7 +844,10 @@ lv_obj_t * screen_dim_create(void) {
         lv_img_set_src(dim_fc_icon[i], &icon_wx_cloud);
         lv_obj_set_style_img_recolor(dim_fc_icon[i], lv_color_hex(0xffffff), 0);
         lv_obj_set_style_img_recolor_opa(dim_fc_icon[i], 255, 0);
-        lv_obj_set_pos(dim_fc_icon[i], cx -SX(20), strip_y);
+        /* 96px-native object with the icon drawn in its centre: place the
+           object so its centre lands at (cx, strip_y+20) — icon centred over
+           the column, just above the day/temp text. */
+        lv_obj_set_pos(dim_fc_icon[i], cx - 48, strip_y - 28);
         lv_obj_add_flag(dim_fc_icon[i], LV_OBJ_FLAG_HIDDEN);
 
         dim_fc_day[i] = lv_label_create(scr_root);

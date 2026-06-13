@@ -74,6 +74,10 @@ int weather_icon_png(const char * code, char * out, size_t n) {
 /* Point an lv_img at buienradar's own icon PNG for `code` (an exact match to the
    website), scaled to roughly `px` pixels; falls back to the recoloured local
    vector icon if the PNG hasn't been cached yet. */
+/* The image is drawn scaled around its centre, so the object keeps its native
+   size (96px PNG / 80px local) and the visible icon sits in the object's CENTRE
+   — callers should centre the object (align CENTER, or position so the object
+   centre lands where the icon should be). */
 void weather_set_tile_icon(lv_obj_t * img, const char * code, int px) {
     if (!img) return;
     char ip[96];

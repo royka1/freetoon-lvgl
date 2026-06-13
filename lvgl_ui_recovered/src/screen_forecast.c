@@ -172,8 +172,8 @@ lv_obj_t * screen_forecast_create(void) {
        precipitation map. Our weather thread saves it to disk every 5 min;
        we render via LVGL's stdio FS driver + PNG decoder. */
     lv_obj_t * radar_frame = lv_obj_create(scr_root);
-    lv_obj_set_size(radar_frame, SX(380), SY(380));
-    lv_obj_set_pos(radar_frame, 30, SY(100));
+    lv_obj_set_size(radar_frame, SX(380), SY(335));
+    lv_obj_set_pos(radar_frame, 30, SY(115));
     lv_obj_set_style_bg_color(radar_frame, lv_color_hex(0x1a2a44), 0);
     lv_obj_set_style_radius(radar_frame, 12, 0);
     lv_obj_set_style_border_color(radar_frame, lv_color_hex(0x335577), 0);
@@ -194,8 +194,8 @@ lv_obj_t * screen_forecast_create(void) {
     /* Zoom + / - buttons stacked on top of the radar frame's top-left
        corner. Translucent so they don't fully hide the map underneath. */
     struct { lv_align_t a; int x, y; int d; const char * t; } z[] = {
-        { LV_ALIGN_TOP_LEFT,     34,  SY(102), +RADAR_ZOOM_STEP, "+" },
-        { LV_ALIGN_TOP_LEFT,     34,  SY(146), -RADAR_ZOOM_STEP, "-" },
+        { LV_ALIGN_TOP_LEFT,     34,  SY(127), +RADAR_ZOOM_STEP, "+" },
+        { LV_ALIGN_TOP_LEFT,     34,  SY(171), -RADAR_ZOOM_STEP, "-" },
     };
     for (size_t i = 0; i < sizeof(z)/sizeof(z[0]); i++) {
         lv_obj_t * b = lv_btn_create(scr_root);
@@ -218,7 +218,7 @@ lv_obj_t * screen_forecast_create(void) {
     lv_obj_set_style_text_color(lbl_title, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lbl_title, SF(28), 0);
     lv_obj_set_width(lbl_title, SX(540));
-    lv_label_set_long_mode(lbl_title, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(lbl_title, LV_LABEL_LONG_DOT);   /* one line — never overlap the report */
     lv_obj_align(lbl_title, LV_ALIGN_TOP_LEFT, SX(440), SY(100));
     lv_label_set_text(lbl_title, "Weersverwachting");
 
@@ -286,13 +286,13 @@ lv_obj_t * screen_forecast_create(void) {
 
         fc_day_lbl[i] = lv_label_create(col);
         lv_obj_set_style_text_color(fc_day_lbl[i], lv_color_hex(0xffffff), 0);
-        lv_obj_set_style_text_font(fc_day_lbl[i], SF(22), 0);
+        lv_obj_set_style_text_font(fc_day_lbl[i], SF(18), 0);
         lv_label_set_text(fc_day_lbl[i], "--");
         lv_obj_align(fc_day_lbl[i], LV_ALIGN_TOP_LEFT, 0, 0);
 
         fc_temp_lbl[i] = lv_label_create(col);
         lv_obj_set_style_text_color(fc_temp_lbl[i], lv_color_hex(0xffcc44), 0);
-        lv_obj_set_style_text_font(fc_temp_lbl[i], SF(22), 0);
+        lv_obj_set_style_text_font(fc_temp_lbl[i], SF(18), 0);
         lv_label_set_text(fc_temp_lbl[i], "");
         lv_obj_align(fc_temp_lbl[i], LV_ALIGN_TOP_RIGHT, 0, 0);
 
