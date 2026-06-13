@@ -56,8 +56,9 @@
 int wind_dir_angle(const char * dir) {
     if (!dir || !*dir) return -1;
     /* Buienradar codes (Dutch): N/O/Z/W. Two-letter combos for diagonals,
-     * three-letter for the in-between bearings. Compass north = 0°,
-     * clockwise positive. LVGL uses 0.1° units. */
+     * three-letter for the in-between bearings. The code names the bearing the
+     * wind blows FROM; the arrow should point where the wind blows TO, so we
+     * add 180°. Compass north = 0°, clockwise positive. LVGL uses 0.1° units. */
     static const struct { const char * c; int deg; } map[] = {
         {"N",      0}, {"NNO",  22}, {"NO",   45}, {"ONO",  67},
         {"O",     90}, {"OZO", 112}, {"ZO",  135}, {"ZZO", 157},
@@ -67,7 +68,7 @@ int wind_dir_angle(const char * dir) {
         {"NE",    45}, {"SE",  135}, {"S",   180}, {"SW",  225},
     };
     for (size_t i = 0; i < sizeof(map)/sizeof(map[0]); i++)
-        if (strcmp(dir, map[i].c) == 0) return map[i].deg * 10;
+        if (strcmp(dir, map[i].c) == 0) return ((map[i].deg + 180) % 360) * 10;
     return -1;
 }
 
