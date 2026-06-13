@@ -50,11 +50,15 @@ have_qtgui() { [ -x "$STARTQT" ] || [ -x "$QTGUI" ]; }
 # /qmf/sbin/qt-gui directly there gives a blank screen / no touch. So prefer
 # startqt when present, else source qt-env.sh (Toon 2 eglfs) and exec qt-gui.
 exec_qtgui() {
-    # qt-gui renders 32bpp, but the Toon 1 video prep forces fb0 to 16bpp for
-    # the LVGL UI/picker. Restore 32bpp before handing off so qt-gui isn't
-    # stuck at the wrong depth. No-op on Toon 2 (prep never ran).
-    if is_toon1 && command -v fbset >/dev/null 2>&1; then
-        fbset -fb /dev/fb0 -depth 32 2>/dev/null || true
+    # qt-gui renders 32bpp, but the LVGL UI/picker forces fb0 to 16bpp. Restore
+    # 32bpp before handing off so qt-gui isn't stuck at the wrong depth (which
+    # would double + corrupt its image). The device has no fbset, so prefer
+    # toonui's built-in ioctl (`--fbdepth`); fall back to fbset where present.
+    # No-op on Toon 2 (always 32bpp).
+    if is_toon1; then
+        "$TOONUI" --fbdepth 32 2>/dev/null \
+            || { command -v fbset >/dev/null 2>&1 && fbset -fb /dev/fb0 -depth 32 2>/dev/null; } \
+            || true
     fi
     if [ -x "$STARTQT" ]; then
         log "exec startqt"
@@ -86,8 +90,12 @@ toon1_video_prep() {
         kill $vpu_pids 2>/dev/null || true
         log "reaped stale vpu_stream ($vpu_pids)"
     fi
+    # fb0 to 16bpp for the LVGL UI/picker. toonui also self-corrects via
+    # fbdev_init, but set it here (no fbset needed) so it's right up front.
+    "$TOONUI" --fbdepth 16 2>/dev/null \
+        || { command -v fbset >/dev/null 2>&1 && fbset -fb /dev/fb0 -depth 16 2>/dev/null; } || true
+    # fb1 video overlay must match fb0; only fbset can set it (skipped if absent).
     if command -v fbset >/dev/null 2>&1; then
-        fbset -fb /dev/fb0 -depth 16 2>/dev/null || true
         [ -e /dev/fb1 ] && { fbset -fb /dev/fb1 -depth 16 2>/dev/null || true; }
     fi
     if [ ! -e /dev/mxc_vpu ]; then

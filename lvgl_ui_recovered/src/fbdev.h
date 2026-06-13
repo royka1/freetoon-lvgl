@@ -44,6 +44,9 @@ void fbdev_init(void);
 void fbdev_exit(void);
 void fbdev_flush(lv_disp_drv_t * drv, const lv_area_t * area, lv_color_t * color_p);
 void fbdev_get_sizes(uint32_t *width, uint32_t *height, uint32_t *dpi);
+/* Force /dev/fb0 to `bpp` bits per pixel (16 for the LVGL UI, 32 for qt-gui).
+   Used at startup and via the `--fbdepth` launcher hook; no fbset needed. */
+int fb_set_depth(int bpp);
 /**
  * Set the X and Y offset in the variable framebuffer info.
  * @param xoffset horizontal offset

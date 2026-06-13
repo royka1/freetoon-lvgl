@@ -90,8 +90,55 @@ static int fbfd = 0;
  *   GLOBAL FUNCTIONS
  **********************/
 
+#if !USE_BSD_FBDEV
+/* Force /dev/fb0 to `bpp` bits per pixel. The stock Toon UI (qt-gui) runs at
+   32bpp while this LVGL build renders 16bpp (RGB565); on a Toon whose
+   framebuffer powers up at the wrong depth our pixels land at the wrong stride,
+   so the image doubles side-by-side and the colours corrupt. `fbset` isn't on
+   the device, so we set the mode directly. Best-effort — a kernel that rejects
+   the change just keeps its current mode. Returns 0 on success / already-right. */
+int fb_set_depth(int bpp)
+{
+    int fd = open(FBDEV_PATH, O_RDWR);
+    if(fd < 0) return -1;
+    struct fb_var_screeninfo v;
+    int rc = -1;
+    if(ioctl(fd, FBIOGET_VSCREENINFO, &v) == 0) {
+        if((int)v.bits_per_pixel == bpp) {
+            rc = 0;                               /* already the right depth */
+        } else {
+            v.bits_per_pixel = (unsigned)bpp;
+            v.xres_virtual   = v.xres;
+            v.yres_virtual   = v.yres;
+            v.xoffset = 0;
+            v.yoffset = 0;
+            if(bpp == 16) {                       /* RGB565 */
+                v.red.offset = 11; v.red.length = 5;
+                v.green.offset = 5; v.green.length = 6;
+                v.blue.offset = 0; v.blue.length = 5;
+                v.transp.offset = 0; v.transp.length = 0;
+            } else if(bpp == 32) {                /* ARGB8888 */
+                v.red.offset = 16; v.red.length = 8;
+                v.green.offset = 8; v.green.length = 8;
+                v.blue.offset = 0; v.blue.length = 8;
+                v.transp.offset = 24; v.transp.length = 8;
+            }
+            rc = ioctl(fd, FBIOPUT_VSCREENINFO, &v);
+        }
+    }
+    close(fd);
+    return rc;
+}
+#endif /* !USE_BSD_FBDEV */
+
 void fbdev_init(void)
 {
+#if !USE_BSD_FBDEV
+    /* Match the framebuffer to the depth this build renders (16bpp RGB565 on
+       Toon 1) before mapping it — otherwise a 32bpp-default panel doubles the
+       image and mangles the colours. No-op when already correct. */
+    fb_set_depth(LV_COLOR_DEPTH);
+#endif
     // Open the file for reading and writing
     fbfd = open(FBDEV_PATH, O_RDWR);
     if(fbfd == -1) {

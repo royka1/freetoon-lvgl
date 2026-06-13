@@ -131,6 +131,13 @@ int main(int argc, char** argv) {
         return bootpick_run();
     }
 
+    /* `--fbdepth N`: just set /dev/fb0's colour depth and exit. The device has
+     * no `fbset`, so ui_launcher.sh uses this to hand 32bpp to qt-gui (toonui
+     * itself forces 16bpp at startup via fbdev_init). */
+    if (argc > 2 && strcmp(argv[1], "--fbdepth") == 0) {
+        return fb_set_depth(atoi(argv[2])) == 0 ? 0 : 1;
+    }
+
     /* Headless WASM-host mode (the toon_wasm_host.sh gate runs us as
      * `toonui --headless`): bring up the data daemons + pwa_server but NOT the
      * framebuffer/LVGL/touch, so the stock qt-gui owns the panel while this
