@@ -28,13 +28,26 @@ step() { echo "@@STEP $1/$STEP_TOTAL $2"; }
 fail() { echo "@@FAIL $*"; }
 
 # Resolve the newest release tag INCLUDING prereleases — all freetoon releases
-# are beta (prerelease), so /releases/latest would skip them. per_page=1 gives
-# the single newest release; grep the first tag_name.
+# are beta (prerelease), so /releases/latest would skip them.
+#
+# PRIMARY: the releases Atom feed, served from github.com — the SAME host the
+# asset downloads use. The old approach hit api.github.com, a separate endpoint
+# with its own DNS and a 60-req/hour unauthenticated rate limit; some Toons can
+# reach github.com fine but get blocked / rate-limited on api.github.com, which
+# showed up as a bogus "no internet?" failure here while downloads worked. The
+# feed lists newest first and includes prereleases. api.github.com stays as a
+# fallback only.
 step 1 "Nieuwste versie opzoeken"
 say "resolving latest release"
 TAG=$(curl -fsSL --connect-timeout 8 --max-time 30 \
-        "https://api.github.com/repos/$REPO/releases?per_page=1" 2>/dev/null \
-      | grep -m1 '"tag_name"' | sed 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/')
+        "https://github.com/$REPO/releases.atom" 2>/dev/null \
+      | grep -m1 -o 'releases/tag/[^"<]*' | sed 's#releases/tag/##')
+if [ -z "$TAG" ]; then
+    say "atom feed unavailable, trying api.github.com"
+    TAG=$(curl -fsSL --connect-timeout 8 --max-time 30 \
+            "https://api.github.com/repos/$REPO/releases?per_page=1" 2>/dev/null \
+          | grep -m1 '"tag_name"' | sed 's/.*"tag_name"[^"]*"\([^"]*\)".*/\1/')
+fi
 if [ -z "$TAG" ]; then
     fail "kon release niet ophalen (geen internet?)"
     say "ERROR: could not resolve latest release tag (no internet?)."
