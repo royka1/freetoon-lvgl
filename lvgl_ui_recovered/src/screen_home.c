@@ -37,6 +37,75 @@
 #include <string.h>
 #include <time.h>
 #include <math.h>
+#include <stdarg.h>
+
+/* --- Only redraw labels whose text actually changed -----------------------
+ * lv_label_set_text() calls lv_obj_invalidate() as its very first line,
+ * unconditionally — so a label re-set to the SAME string still forces a full
+ * redraw + framebuffer flush of that region. refresh_cb() fires every 500 ms
+ * and rewrites ~130 home labels (clock, temps, energy, news, pressure, …),
+ * almost none of which change on a given tick. On the Toon 1 software renderer
+ * with an uncached framebuffer that needless redraw was the bulk of the
+ * idle-home CPU.
+ *
+ * These wrappers compare against the label's current text and skip the set
+ * (and thus the invalidate) when it's identical. The #defines reroute every
+ * lv_label_set_text[_fmt]() in THIS FILE through them, so all existing call
+ * sites benefit with no edits. The helpers are defined BEFORE the macros, so
+ * they still reach the real LVGL functions (no recursive expansion). */
+static inline void home_lbl_set(lv_obj_t * lbl, const char * txt)
+{
+    if (!lbl || !txt) return;
+    const char * cur = lv_label_get_text(lbl);
+    if (cur && strcmp(cur, txt) == 0) return;   /* unchanged → no invalidate */
+    lv_label_set_text(lbl, txt);
+}
+static inline void home_lbl_set_fmt(lv_obj_t * lbl, const char * fmt, ...)
+    __attribute__((format(printf, 2, 3)));
+static inline void home_lbl_set_fmt(lv_obj_t * lbl, const char * fmt, ...)
+{
+    if (!lbl || !fmt) return;
+    char buf[512];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    home_lbl_set(lbl, buf);
+}
+#define lv_label_set_text(o, s)        home_lbl_set((o), (s))
+#define lv_label_set_text_fmt(o, ...)  home_lbl_set_fmt((o), __VA_ARGS__)
+
+/* Same "only redraw what changed" idea for the style/image setters refresh_cb
+ * pokes every tick. lv_obj_set_style_*() (via lv_obj_refresh_style) and
+ * lv_img_set_src() invalidate unconditionally; lv_img_set_angle() already
+ * early-returns on an unchanged angle, so it needs no wrapper. These read the
+ * current value (PART_MAIN / default state — all the refresh_cb sites use
+ * selector 0) and skip the set when it matches. Not macro-routed: unlike
+ * labels, the style setters take a selector arg that varies elsewhere in this
+ * file, so only the refresh_cb call sites are switched to these by hand. */
+static inline void home_border_w(lv_obj_t * o, lv_coord_t w) {
+    if (!o || lv_obj_get_style_border_width(o, LV_PART_MAIN) == w) return;
+    lv_obj_set_style_border_width(o, w, 0);
+}
+static inline void home_bg_color(lv_obj_t * o, lv_color_t c) {
+    if (!o || lv_obj_get_style_bg_color(o, LV_PART_MAIN).full == c.full) return;
+    lv_obj_set_style_bg_color(o, c, 0);
+}
+static inline void home_bg_opa(lv_obj_t * o, lv_opa_t op) {
+    if (!o || lv_obj_get_style_bg_opa(o, LV_PART_MAIN) == op) return;
+    lv_obj_set_style_bg_opa(o, op, 0);
+}
+static inline void home_text_color(lv_obj_t * o, lv_color_t c) {
+    if (!o || lv_obj_get_style_text_color(o, LV_PART_MAIN).full == c.full) return;
+    lv_obj_set_style_text_color(o, c, 0);
+}
+static inline void home_img_recolor(lv_obj_t * o, lv_color_t c) {
+    if (!o || lv_obj_get_style_img_recolor(o, LV_PART_MAIN).full == c.full) return;
+    lv_obj_set_style_img_recolor(o, c, 0);
+}
+static inline void home_img_src(lv_obj_t * o, const void * src) {
+    if (!o || lv_img_get_src(o) == src) return;   /* same source pointer → skip */
+    lv_img_set_src(o, src);
+}
 
 #define COL_BG          0x0f1a2a
 #define COL_TILE_BG     0x1a2a44
@@ -1629,12 +1698,8 @@ static void refresh_cb(lv_timer_t * t) {
     int temp_origin = boxtalk_temp_override_origin();   /* -1 if none */
     int on_schedule = (toon_state.active_state >= 0) || (temp_origin >= 0);
 
-    if (tile_btn_mode_manual)
-        lv_obj_set_style_border_width(tile_btn_mode_manual,
-                                      on_schedule ? 0 : 2, 0);
-    if (tile_btn_mode_program)
-        lv_obj_set_style_border_width(tile_btn_mode_program,
-                                      on_schedule ? 2 : 0, 0);
+    home_border_w(tile_btn_mode_manual,  on_schedule ? 0 : 2);
+    home_border_w(tile_btn_mode_program, on_schedule ? 2 : 0);
 
     /* Program-button label: just "Program" normally, "Program*" while a
      * +/- temporary override is outstanding (the schedule will reassert
@@ -1661,8 +1726,7 @@ static void refresh_cb(lv_timer_t * t) {
         int hi = on_schedule ? preset : -1;
         for (int i = 0; i < 4; i++) {
             if (!tile_btn_preset[i]) continue;
-            lv_obj_set_style_border_width(tile_btn_preset[i],
-                                          (i == hi) ? 2 : 0, 0);
+            home_border_w(tile_btn_preset[i], (i == hi) ? 2 : 0);
         }
     }
 
@@ -1696,16 +1760,14 @@ static void refresh_cb(lv_timer_t * t) {
     if (pressure_banner && pressure_banner_lbl) {
         float p = toon_state.water_pressure;
         if (p > 0.1f && p < 0.6f) {
-            lv_obj_set_style_bg_color(pressure_banner,
-                                      lv_color_hex(0xff3344), 0);
-            lv_obj_set_style_bg_opa(pressure_banner, LV_OPA_COVER, 0);
+            home_bg_color(pressure_banner, lv_color_hex(0xff3344));
+            home_bg_opa(pressure_banner, LV_OPA_COVER);
             lv_label_set_text_fmt(pressure_banner_lbl,
                                   "CH water pressure CRITICAL: %.1f bar", p);
             lv_obj_clear_flag(pressure_banner, LV_OBJ_FLAG_HIDDEN);
         } else if (p > 0.1f && p < 0.8f) {
-            lv_obj_set_style_bg_color(pressure_banner,
-                                      lv_color_hex(0xffcc44), 0);
-            lv_obj_set_style_bg_opa(pressure_banner, LV_OPA_COVER, 0);
+            home_bg_color(pressure_banner, lv_color_hex(0xffcc44));
+            home_bg_opa(pressure_banner, LV_OPA_COVER);
             lv_label_set_text_fmt(pressure_banner_lbl,
                                   "CH water pressure low: %.1f bar", p);
             lv_obj_clear_flag(pressure_banner, LV_OBJ_FLAG_HIDDEN);
@@ -1724,9 +1786,8 @@ static void refresh_cb(lv_timer_t * t) {
         const char * aql = air_quality_label(toon_state.eco2, toon_state.tvoc);
         if (*aql) {
             lv_label_set_text_fmt(lbl_t_aq, "Air: %s", aql);
-            lv_obj_set_style_text_color(lbl_t_aq,
-                lv_color_hex(air_quality_color(toon_state.eco2, toon_state.tvoc)),
-                0);
+            home_text_color(lbl_t_aq,
+                lv_color_hex(air_quality_color(toon_state.eco2, toon_state.tvoc)));
         } else {
             lv_label_set_text(lbl_t_aq, "");
         }
@@ -1753,9 +1814,9 @@ static void refresh_cb(lv_timer_t * t) {
                 fit_font(lbl_waste_type, p1.labels,
                          lv_obj_get_content_width(tile_waste) - 80, 18);
             if (waste_icon_1) {
-                lv_img_set_src(waste_icon_1, waste_icon_for_label(p1.labels));
-                lv_obj_set_style_img_recolor(waste_icon_1,
-                    lv_color_hex(waste_accent_for_label(p1.labels)), 0);
+                home_img_src(waste_icon_1, waste_icon_for_label(p1.labels));
+                home_img_recolor(waste_icon_1,
+                    lv_color_hex(waste_accent_for_label(p1.labels)));
                 waste_center_icon(waste_icon_1, lbl_waste_date, lbl_waste_type);
             }
         } else {
@@ -1771,9 +1832,9 @@ static void refresh_cb(lv_timer_t * t) {
             if (tile_waste)
                 fit_font(lbl_waste_type_2, p2.labels,
                          lv_obj_get_content_width(tile_waste) - 80, 14);
-            lv_img_set_src(waste_icon_2, waste_icon_for_label(p2.labels));
-            lv_obj_set_style_img_recolor(waste_icon_2,
-                lv_color_hex(waste_accent_for_label(p2.labels)), 0);
+            home_img_src(waste_icon_2, waste_icon_for_label(p2.labels));
+            home_img_recolor(waste_icon_2,
+                lv_color_hex(waste_accent_for_label(p2.labels)));
             lv_obj_clear_flag(waste_icon_2, LV_OBJ_FLAG_HIDDEN);
             waste_center_icon(waste_icon_2, lbl_waste_date_2, lbl_waste_type_2);
         } else if (waste_icon_2) {
@@ -1836,10 +1897,10 @@ static void refresh_cb(lv_timer_t * t) {
             if (tile_vent)
                 fit_font(lbl_boiler_state, "Itho offline",
                          lv_obj_get_content_width(tile_vent) - SX(64), 18);
-            if (vent_btn_low)   lv_obj_set_style_border_width(vent_btn_low,   0, 0);
-            if (vent_btn_high)  lv_obj_set_style_border_width(vent_btn_high,  0, 0);
-            if (vent_btn_auto)  lv_obj_set_style_border_width(vent_btn_auto,  0, 0);
-            if (vent_btn_timer) lv_obj_set_style_border_width(vent_btn_timer, 0, 0);
+            home_border_w(vent_btn_low,   0);
+            home_border_w(vent_btn_high,  0);
+            home_border_w(vent_btn_auto,  0);
+            home_border_w(vent_btn_timer, 0);
         } else if (vent_state.connected) {
             /* Same snapshot trick as last_source — fan_info is a non-
              * volatile char[] written by another thread; memcpy a local
@@ -1880,20 +1941,16 @@ static void refresh_cb(lv_timer_t * t) {
             int act_timer = strcmp(fi_local, "timer")  == 0
                          || vent_state.remaining_min > 0;
             if (act_timer) { act_low = act_high = act_auto = 0; }
-            if (vent_btn_low)
-                lv_obj_set_style_border_width(vent_btn_low,   act_low   ? 2 : 0, 0);
-            if (vent_btn_high)
-                lv_obj_set_style_border_width(vent_btn_high,  act_high  ? 2 : 0, 0);
-            if (vent_btn_auto)
-                lv_obj_set_style_border_width(vent_btn_auto,  act_auto  ? 2 : 0, 0);
-            if (vent_btn_timer)
-                lv_obj_set_style_border_width(vent_btn_timer, act_timer ? 2 : 0, 0);
+            home_border_w(vent_btn_low,   act_low   ? 2 : 0);
+            home_border_w(vent_btn_high,  act_high  ? 2 : 0);
+            home_border_w(vent_btn_auto,  act_auto  ? 2 : 0);
+            home_border_w(vent_btn_timer, act_timer ? 2 : 0);
         } else {
             lv_label_set_text(lbl_boiler_state, "off");
-            if (vent_btn_low)   lv_obj_set_style_border_width(vent_btn_low,   0, 0);
-            if (vent_btn_high)  lv_obj_set_style_border_width(vent_btn_high,  0, 0);
-            if (vent_btn_auto)  lv_obj_set_style_border_width(vent_btn_auto,  0, 0);
-            if (vent_btn_timer) lv_obj_set_style_border_width(vent_btn_timer, 0, 0);
+            home_border_w(vent_btn_low,   0);
+            home_border_w(vent_btn_high,  0);
+            home_border_w(vent_btn_auto,  0);
+            home_border_w(vent_btn_timer, 0);
         }
     }
     if (!slot_active[TILE_SLOT_VENT] && lbl_boiler_pressure) {
@@ -1970,8 +2027,7 @@ static void refresh_cb(lv_timer_t * t) {
             else
                 lv_label_set_text_fmt(P->lbl, "%s  %s", D->name, st);
             if (P->btn_lbl) lv_label_set_text(P->btn_lbl, D->on ? "On" : "Off");
-            if (P->btn) lv_obj_set_style_bg_color(P->btn,
-                            lv_color_hex(D->on ? 0xffcc44 : 0x3a4658), 0);
+            home_bg_color(P->btn, lv_color_hex(D->on ? 0xffcc44 : 0x3a4658));
             if (P->slider && D->type == HADEV_LIGHT) {
                 if (D->on && D->brightness > 0)
                     lv_slider_set_value(P->slider, D->brightness * 100 / 255, LV_ANIM_OFF);
@@ -3574,7 +3630,17 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_color(lbl_life360_a, lv_color_hex(0x88aaff), 0);
     lv_obj_set_style_text_font(lbl_life360_a, SF(18), 0);
     lv_obj_set_width(lbl_life360_a, 194);
+    /* Toon 1 (400 MHz ARM926, no GPU, uncached fb): the address almost always
+     * overflows the tile, so SCROLL_CIRCULAR animates non-stop — re-rendering +
+     * flushing a pixel band to the slow framebuffer every refresh (~50 fps at
+     * the 20 ms refr period), which alone holds the render thread at ~25 % CPU.
+     * Clip to an ellipsis instead (fb touched only when the address changes),
+     * matching the news-ticker decision above. Toon 2 keeps the scroll. */
+#ifdef TOON1
+    lv_label_set_long_mode(lbl_life360_a, LV_LABEL_LONG_DOT);
+#else
     lv_label_set_long_mode(lbl_life360_a, LV_LABEL_LONG_SCROLL_CIRCULAR);
+#endif
     lv_label_set_text(lbl_life360_a, "?");
     lv_obj_align(lbl_life360_a, LV_ALIGN_TOP_LEFT, 0, 44);
 
@@ -3583,7 +3649,11 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_set_style_text_color(lbl_life360_b, lv_color_hex(0xff88cc), 0);
     lv_obj_set_style_text_font(lbl_life360_b, SF(18), 0);
     lv_obj_set_width(lbl_life360_b, 194);
+#ifdef TOON1
+    lv_label_set_long_mode(lbl_life360_b, LV_LABEL_LONG_DOT);
+#else
     lv_label_set_long_mode(lbl_life360_b, LV_LABEL_LONG_SCROLL_CIRCULAR);
+#endif
     lv_label_set_text(lbl_life360_b, "?");
     lv_obj_align(lbl_life360_b, LV_ALIGN_TOP_LEFT, 0, 76);
 
