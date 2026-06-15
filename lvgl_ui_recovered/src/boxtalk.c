@@ -13,6 +13,7 @@
 #include "inbox.h"
 #include "schedule.h"
 #include "settings.h"
+#include "i18n.h"
 #include "tile_slots.h"
 #include "meteradapter.h"
 #include "client_link.h"
@@ -62,11 +63,11 @@ const char * air_quality_label(int eco2, int tvoc) {
         if (t > level) level = t;
     }
     switch (level) {
-        case 1: return "Excellent";
-        case 2: return "Good";
-        case 3: return "Fair";
-        case 4: return "Poor";
-        case 5: return "Bad";
+        case 1: return TR(I18N_AQ_EXCELLENT);
+        case 2: return TR(I18N_AQ_GOOD);
+        case 3: return TR(I18N_AQ_FAIR);
+        case 4: return TR(I18N_AQ_POOR);
+        case 5: return TR(I18N_AQ_BAD);
         default: return "";
     }
 }
@@ -101,13 +102,13 @@ const char* program_label(void) {
         origin = temp_override_origin;
     int preset_idx = (toon_state.active_state >= 0)
                          ? toon_state.active_state : origin;
-    if (preset_idx < 0) return "Manual";
+    if (preset_idx < 0) return TR(I18N_MODE_MANUAL);
     switch (preset_idx) {
-        case 0: return "Comfort";
-        case 1: return "Home";
-        case 2: return "Sleep";
-        case 3: return "Away";
-        default: return "Scheduled";
+        case 0: return TR(I18N_PRESET_COMFORT);
+        case 1: return TR(I18N_PRESET_HOME);
+        case 2: return TR(I18N_PRESET_SLEEP);
+        case 3: return TR(I18N_PRESET_AWAY);
+        default: return TR(I18N_MODE_PROGRAM);   /* matches the home Program button */
     }
 }
 

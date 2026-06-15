@@ -31,6 +31,7 @@
 #include "layout.h"
 #include "update_check.h"
 #include "pin_modal.h"
+#include "i18n.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
@@ -424,15 +425,15 @@ static float energy_water_m3(void) {
 static const char * energy_offline_label(void) {
     switch (settings.energy_elec_source) {
     case ENERGY_SRC_HW_P1:
-        return hw_state.polled_p1 ? "P1 offline" : "Initializing...";
+        return hw_state.polled_p1 ? "P1 offline" : TR(I18N_INITIALIZING);
     case ENERGY_SRC_ZWAVE:
-        return meter_state.last_flow_s ? "meter offline" : "Initializing...";
+        return meter_state.last_flow_s ? "meter offline" : TR(I18N_INITIALIZING);
     case ENERGY_SRC_HA:
-        return ha_energy.connected ? "Initializing..." : "HA offline";
+        return ha_energy.connected ? TR(I18N_INITIALIZING) : "HA offline";
     case ENERGY_SRC_DOMOTICZ:
-        return dz_energy.connected ? "Initializing..." : "Domoticz offline";
+        return dz_energy.connected ? TR(I18N_INITIALIZING) : "Domoticz offline";
     default:
-        return "Off";
+        return TR(I18N_OFF);
     }
 }
 
@@ -576,7 +577,7 @@ static void on_program_tap(lv_event_t * e) {
     lv_obj_set_style_text_font(title, SF(28), 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, SY(50));
 
-    const char* names[]  = {"Comfort", "Home", "Sleep", "Away", "Manual"};
+    const char* names[]  = {TR(I18N_PRESET_COMFORT), TR(I18N_PRESET_HOME), TR(I18N_PRESET_SLEEP), TR(I18N_PRESET_AWAY), TR(I18N_MODE_MANUAL)};
     int         values[] = {0, 1, 2, 3, -1};
     uint32_t    colors[] = {0xff8866, 0x66cc88, 0x4466cc, 0xaa66ff, 0xffaa44};
     for (int i = 0; i < 5; i++) {
@@ -754,7 +755,7 @@ static void do_install_now(lv_event_t * e) {
         lv_obj_set_size(x, SX(130), SY(46));
         lv_obj_align(x, LV_ALIGN_BOTTOM_RIGHT, SX(-16), SY(-12));
         lv_obj_add_event_cb(x, upd_prog_close, LV_EVENT_CLICKED, NULL);
-        lv_obj_t * xl = lv_label_create(x); lv_label_set_text(xl, "Sluiten"); lv_obj_center(xl);
+        lv_obj_t * xl = lv_label_create(x); lv_label_set_text(xl, TR(I18N_CLOSE)); lv_obj_center(xl);
     }
 
     /* Truncate the log so the modal starts from this run's markers, then fire
@@ -978,7 +979,7 @@ static void open_about_modal(lv_event_t * e) {
     lv_obj_add_event_cb(x, on_update_modal_close, LV_EVENT_CLICKED, NULL);
     lv_obj_t * xl = lv_label_create(x);
     lv_obj_set_style_text_font(xl, SF(22), 0);
-    lv_label_set_text(xl, "Close"); lv_obj_center(xl);
+    lv_label_set_text(xl, TR(I18N_CLOSE)); lv_obj_center(xl);
 }
 /* Keep the old name as an alias for the banner's click handler. */
 static void on_update_banner_click(lv_event_t * e) { open_about_modal(e); }
@@ -1114,9 +1115,9 @@ static void build_pin_tile(lv_obj_t * parent, int dev_idx, int slot) {
 
     if (D->type == HADEV_COVER) {
         struct { const char * txt; uint32_t col; lv_event_cb_t cb; int x; } cb[] = {
-            { "Open", 0x2e6e3a, on_pin_open, -156 },
-            { "Stop", 0x6a5424, on_pin_stop,  -82 },
-            { "Close",0x6e3a3a, on_pin_close,  -8 },
+            { TR(I18N_OPEN), 0x2e6e3a, on_pin_open, -156 },
+            { TR(I18N_STOP), 0x6a5424, on_pin_stop,  -82 },
+            { TR(I18N_CLOSE_SHORT), 0x6e3a3a, on_pin_close, -8 },
         };
         for (size_t i = 0; i < 3; i++) {
             lv_obj_t * b = lv_btn_create(t);
@@ -1167,7 +1168,7 @@ static void build_pin_tile(lv_obj_t * parent, int dev_idx, int slot) {
         P->btn_lbl = lv_label_create(P->btn);
         lv_obj_set_style_text_color(P->btn_lbl, lv_color_hex(0xffffff), 0);
         lv_obj_set_style_text_font(P->btn_lbl, SF(14), 0);
-        lv_label_set_text(P->btn_lbl, run ? (D->type == HADEV_SCENE ? "Activate" : "Run") : "Off");
+        lv_label_set_text(P->btn_lbl, run ? (D->type == HADEV_SCENE ? TR(I18N_ACTIVATE) : TR(I18N_RUN)) : TR(I18N_OFF));
         lv_obj_center(P->btn_lbl);
     }
     home_pin_count++;
@@ -1378,10 +1379,10 @@ static void render_local_into(const char * id, lv_obj_t * title,
                               lv_obj_t * main, lv_obj_t * sub) {
     if (sub) lv_label_set_text(sub, "");
     if (!strcmp(id, "local:energy")) {
-        if (title) lv_label_set_text(title, "Energie");
+        if (title) lv_label_set_text(title, TR(I18N_TILE_ENERGY));
         if (main)  lv_label_set_text_fmt(main, "%.0f W", energy_elec_power_w());
     } else if (!strcmp(id, "local:water")) {
-        if (title) lv_label_set_text(title, "Water");
+        if (title) lv_label_set_text(title, TR(I18N_TILE_WATER));
         if (energy_water_connected()) {
             if (main && settings.energy_water_source == ENERGY_SRC_HW_P1)
                 lv_label_set_text_fmt(main, "%.1f L/min", hw_state.water_lpm);
@@ -1390,16 +1391,16 @@ static void render_local_into(const char * id, lv_obj_t * title,
             if (sub) lv_label_set_text_fmt(sub, "%.2f m3", energy_water_m3());
         } else if (main) lv_label_set_text(main, "offline");
     } else if (!strcmp(id, "local:vent")) {
-        if (title) lv_label_set_text(title, "Ventilatie");
+        if (title) lv_label_set_text(title, TR(I18N_TILE_VENT));
         if (vent_state.connected) {
             if (main) lv_label_set_text_fmt(main, "%d%%", vent_state.exh_fan_pct);
         } else if (main) lv_label_set_text(main, "offline");
     } else if (!strcmp(id, "local:family")) {
-        if (title) lv_label_set_text(title, "Familie");
+        if (title) lv_label_set_text(title, TR(I18N_TILE_FAMILY));
         if (main)  lv_label_set_text(main, ha_state.loc_a[0] ? (const char *)ha_state.loc_a : "-");
         if (sub)   lv_label_set_text(sub,  (const char *)ha_state.loc_b);
     } else if (!strcmp(id, "local:air")) {
-        if (title) lv_label_set_text(title, "Lucht");
+        if (title) lv_label_set_text(title, TR(I18N_AIR));
         if (main)  lv_label_set_text_fmt(main, "%d ppm", toon_state.eco2);
         if (sub)   lv_label_set_text(sub, air_quality_label(toon_state.eco2, toon_state.tvoc));
     }
@@ -1432,16 +1433,21 @@ static int rotate_member_at(int n, char * out, size_t sz) {
     return 0;
 }
 
-/* Format a waste-pickup date the Dutch way: "Vandaag" / "Morgen" / "9 juni". */
+/* Format a waste-pickup date: "Today"/"Tomorrow"/"9 June" or, in Dutch,
+ * "Vandaag"/"Morgen"/"9 juni". */
 static const char * waste_when_nl(const char * iso_date, char * buf, size_t n) {
     long days = waste_days_until(iso_date);
-    if (days == 0) { snprintf(buf, n, "Vandaag"); return buf; }
-    if (days == 1) { snprintf(buf, n, "Morgen");  return buf; }
+    if (days == 0) { snprintf(buf, n, "%s", TR(I18N_TODAY));    return buf; }
+    if (days == 1) { snprintf(buf, n, "%s", TR(I18N_TOMORROW)); return buf; }
     static const char * const nl_month[12] = {
         "januari", "februari", "maart", "april", "mei", "juni",
         "juli", "augustus", "september", "oktober", "november", "december"};
+    static const char * const en_month[12] = {
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"};
+    const char * const * mon = (settings.lang == 1) ? nl_month : en_month;
     int mo = atoi(iso_date + 5), dy = atoi(iso_date + 8);
-    snprintf(buf, n, "%d %s", dy, (mo >= 1 && mo <= 12) ? nl_month[mo - 1] : "");
+    snprintf(buf, n, "%d %s", dy, (mo >= 1 && mo <= 12) ? mon[mo - 1] : "");
     return buf;
 }
 
@@ -1659,7 +1665,17 @@ static void refresh_cb(lv_timer_t * t) {
     lv_label_set_text(lbl_t_clock, clk);
     if (lbl_t_date) {
         char dt[48];
-        strftime(dt, sizeof(dt), "%a %d %b", &tm);
+        if (settings.lang == 1) {
+            /* Dutch — the C locale strftime gives English names, so format it
+             * by hand from short-name tables. */
+            static const char * const nl_wd[7]  = { "zo","ma","di","wo","do","vr","za" };
+            static const char * const nl_mon[12] = { "jan","feb","mrt","apr","mei","jun",
+                                                     "jul","aug","sep","okt","nov","dec" };
+            snprintf(dt, sizeof dt, "%s %d %s",
+                     nl_wd[tm.tm_wday % 7], tm.tm_mday, nl_mon[tm.tm_mon % 12]);
+        } else {
+            strftime(dt, sizeof dt, "%a %d %b", &tm);
+        }
         lv_label_set_text(lbl_t_date, dt);
     }
     /* Refresh the moon-phase icon at most once per refresh tick — phase
@@ -1684,7 +1700,7 @@ static void refresh_cb(lv_timer_t * t) {
      * temperature, no arrow). */
     if (toon_state.setpoint > 0) {
         if (toon_state.burner_on)
-            lv_label_set_text_fmt(lbl_t_setpoint, "to %.1f°C", toon_state.setpoint);
+            lv_label_set_text_fmt(lbl_t_setpoint, "%s %.1f°C", TR(I18N_SETPOINT_TO), toon_state.setpoint);
         else
             lv_label_set_text_fmt(lbl_t_setpoint, "%.1f°C", toon_state.setpoint);
     } else {
@@ -1713,8 +1729,8 @@ static void refresh_cb(lv_timer_t * t) {
         preset = temp_origin;
     }
     if (lbl_t_program) {
-        lv_label_set_text(lbl_t_program,
-            boxtalk_temp_override_active() ? "Program*" : "Program");
+        lv_label_set_text_fmt(lbl_t_program, "%s%s", TR(I18N_MODE_PROGRAM),
+            boxtalk_temp_override_active() ? "*" : "");
     }
 
     /* Direct-preset row: white border on whichever preset is currently in
@@ -1763,20 +1779,20 @@ static void refresh_cb(lv_timer_t * t) {
             home_bg_color(pressure_banner, lv_color_hex(0xff3344));
             home_bg_opa(pressure_banner, LV_OPA_COVER);
             lv_label_set_text_fmt(pressure_banner_lbl,
-                                  "CH water pressure CRITICAL: %.1f bar", p);
+                                  TR(I18N_PRESSURE_CRITICAL), p);
             lv_obj_clear_flag(pressure_banner, LV_OBJ_FLAG_HIDDEN);
         } else if (p > 0.1f && p < 0.8f) {
             home_bg_color(pressure_banner, lv_color_hex(0xffcc44));
             home_bg_opa(pressure_banner, LV_OPA_COVER);
             lv_label_set_text_fmt(pressure_banner_lbl,
-                                  "CH water pressure low: %.1f bar", p);
+                                  TR(I18N_PRESSURE_LOW), p);
             lv_obj_clear_flag(pressure_banner, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(pressure_banner, LV_OBJ_FLAG_HIDDEN);
         }
     }
     if (lbl_t_humidity && toon_state.humidity > 0)
-        lv_label_set_text_fmt(lbl_t_humidity, "RH %.0f%%",
+        lv_label_set_text_fmt(lbl_t_humidity, "%s %.0f%%", TR(I18N_RH),
                               toon_state.humidity);
     if (lbl_t_ppm && toon_state.eco2)
         lv_label_set_text_fmt(lbl_t_ppm, "%d ppm", toon_state.eco2);
@@ -1785,7 +1801,7 @@ static void refresh_cb(lv_timer_t * t) {
     if (lbl_t_aq) {
         const char * aql = air_quality_label(toon_state.eco2, toon_state.tvoc);
         if (*aql) {
-            lv_label_set_text_fmt(lbl_t_aq, "Air: %s", aql);
+            lv_label_set_text_fmt(lbl_t_aq, "%s: %s", TR(I18N_AIR), aql);
             home_text_color(lbl_t_aq,
                 lv_color_hex(air_quality_color(toon_state.eco2, toon_state.tvoc)));
         } else {
@@ -1823,7 +1839,7 @@ static void refresh_cb(lv_timer_t * t) {
             lv_label_set_text(lbl_waste_date,
                               waste_state.connected ? "--" : "...");
             lv_label_set_text(lbl_waste_type,
-                              waste_state.connected ? "geen" : "");
+                              waste_state.connected ? TR(I18N_NONE) : "");
         }
         if (n >= 2 && lbl_waste_date_2 && lbl_waste_type_2 && waste_icon_2) {
             char wb2[24];
@@ -1911,8 +1927,14 @@ static void refresh_cb(lv_timer_t * t) {
             fi_local[sizeof(fi_local) - 1] = 0;
             const char * preset = fi_local[0] ? fi_local : "?";
             char preset_pretty[16] = {0};
-            /* "low"/"high" → "Low"/"High"; preserve "auto"/"medium"/"timer" */
-            snprintf(preset_pretty, sizeof(preset_pretty), "%c%s",
+            /* Map the wire fan_info to a translated label; fall back to
+             * capitalising the raw value for anything unexpected. */
+            if      (!strcmp(fi_local, "low"))    snprintf(preset_pretty, sizeof preset_pretty, "%s", TR(I18N_VENT_LOW));
+            else if (!strcmp(fi_local, "high"))   snprintf(preset_pretty, sizeof preset_pretty, "%s", TR(I18N_VENT_HIGH));
+            else if (!strcmp(fi_local, "auto"))   snprintf(preset_pretty, sizeof preset_pretty, "%s", TR(I18N_VENT_AUTO));
+            else if (!strcmp(fi_local, "medium")) snprintf(preset_pretty, sizeof preset_pretty, "%s", TR(I18N_VENT_MEDIUM));
+            else if (!strcmp(fi_local, "timer"))  snprintf(preset_pretty, sizeof preset_pretty, "%s", TR(I18N_VENT_TIMER));
+            else snprintf(preset_pretty, sizeof(preset_pretty), "%c%s",
                      (preset[0] >= 'a' && preset[0] <= 'z')
                          ? preset[0] - 'a' + 'A' : preset[0],
                      preset + 1);
@@ -1946,7 +1968,7 @@ static void refresh_cb(lv_timer_t * t) {
             home_border_w(vent_btn_auto,  act_auto  ? 2 : 0);
             home_border_w(vent_btn_timer, act_timer ? 2 : 0);
         } else {
-            lv_label_set_text(lbl_boiler_state, "off");
+            lv_label_set_text(lbl_boiler_state, TR(I18N_OFF_LC));
             home_border_w(vent_btn_low,   0);
             home_border_w(vent_btn_high,  0);
             home_border_w(vent_btn_auto,  0);
@@ -2021,12 +2043,12 @@ static void refresh_cb(lv_timer_t * t) {
             if (P->slider && D->position >= 0)
                 lv_slider_set_value(P->slider, D->position, LV_ANIM_ON);
         } else if (D->type == HADEV_LIGHT || D->type == HADEV_SWITCH) {
-            const char * st = !D->available ? "offline" : (D->on ? "on" : "off");
+            const char * st = !D->available ? "offline" : (D->on ? TR(I18N_ON_LC) : TR(I18N_OFF_LC));
             if (D->type == HADEV_LIGHT && D->available && D->on && D->brightness > 0)
                 lv_label_set_text_fmt(P->lbl, "%s  on %d%%", D->name, D->brightness * 100 / 255);
             else
                 lv_label_set_text_fmt(P->lbl, "%s  %s", D->name, st);
-            if (P->btn_lbl) lv_label_set_text(P->btn_lbl, D->on ? "On" : "Off");
+            if (P->btn_lbl) lv_label_set_text(P->btn_lbl, D->on ? TR(I18N_ON) : TR(I18N_OFF));
             home_bg_color(P->btn, lv_color_hex(D->on ? 0xffcc44 : 0x3a4658));
             if (P->slider && D->type == HADEV_LIGHT) {
                 if (D->on && D->brightness > 0)
@@ -2073,7 +2095,7 @@ static void refresh_cb(lv_timer_t * t) {
                 (void)y;
                 lv_label_set_text_fmt(lbl_bot_waste, "%d-%d  %s", d, mo, labels);
             } else {
-                lv_label_set_text(lbl_bot_waste, "geen");
+                lv_label_set_text(lbl_bot_waste, TR(I18N_NONE));
             }
         } else {
             lv_label_set_text(lbl_bot_waste, "...");
@@ -2093,7 +2115,7 @@ static void refresh_cb(lv_timer_t * t) {
                 lv_label_set_text_fmt(lbl_inbox_main, "%.3f m3", energy_water_m3());
             else
                 lv_label_set_text(lbl_inbox_main,
-                                  (settings.energy_water_source == ENERGY_SRC_HW_P1 && !hw_state.polled_water) ? "Initializing..." : "WTR offline");
+                                  (settings.energy_water_source == ENERGY_SRC_HW_P1 && !hw_state.polled_water) ? TR(I18N_INITIALIZING) : "WTR offline");
         }
         if (lbl_inbox_sub) {
             if (!energy_water_connected()) {
@@ -2341,7 +2363,7 @@ static void refresh_cb(lv_timer_t * t) {
                 (void)y;
                 lv_label_set_text_fmt(lbl_bot_waste, "%d-%d  %s", d, mo, labels);
             } else {
-                lv_label_set_text(lbl_bot_waste, "geen");
+                lv_label_set_text(lbl_bot_waste, TR(I18N_NONE));
             }
         } else {
             lv_label_set_text(lbl_bot_waste, "...");
@@ -2361,7 +2383,7 @@ static void refresh_cb(lv_timer_t * t) {
                 lv_label_set_text_fmt(lbl_inbox_main, "%.3f m3", energy_water_m3());
             else
                 lv_label_set_text(lbl_inbox_main,
-                                  (settings.energy_water_source == ENERGY_SRC_HW_P1 && !hw_state.polled_water) ? "Initializing..." : "WTR offline");
+                                  (settings.energy_water_source == ENERGY_SRC_HW_P1 && !hw_state.polled_water) ? TR(I18N_INITIALIZING) : "WTR offline");
         }
         if (lbl_inbox_sub) {
             if (!energy_water_connected()) {
@@ -2772,7 +2794,7 @@ static void on_news_tap(lv_event_t * e) {
     lv_obj_set_size(x, SX(130), SY(48));
     lv_obj_align(x, LV_ALIGN_BOTTOM_RIGHT, SX(-16), SY(-12));
     lv_obj_add_event_cb(x, news_modal_close, LV_EVENT_CLICKED, NULL);
-    lv_obj_t * xl = lv_label_create(x); lv_label_set_text(xl, "Sluiten"); lv_obj_center(xl);
+    lv_obj_t * xl = lv_label_create(x); lv_label_set_text(xl, TR(I18N_CLOSE)); lv_obj_center(xl);
 }
 
 /* Open the news reader from elsewhere (e.g. Settings → News) so it's reachable
@@ -3070,7 +3092,7 @@ static void open_family_map(lv_event_t * e) {
     lv_obj_align(x, LV_ALIGN_BOTTOM_RIGHT, SX(-14), SY(-12));
     lv_obj_set_style_bg_color(x, lv_color_hex(0x3a6090), 0);
     lv_obj_add_event_cb(x, map_close, LV_EVENT_CLICKED, NULL);
-    lv_obj_t * xl = lv_label_create(x); lv_label_set_text(xl, "Sluiten"); lv_obj_center(xl);
+    lv_obj_t * xl = lv_label_create(x); lv_label_set_text(xl, TR(I18N_CLOSE)); lv_obj_center(xl);
 
     start_map_fetch(0);
 }
@@ -3268,7 +3290,7 @@ lv_obj_t * screen_home_create(void) {
         lv_obj_add_event_cb(tile_btn_mode_manual, on_mode_manual,
                             LV_EVENT_CLICKED, NULL);
         lv_obj_t * ml = lv_label_create(tile_btn_mode_manual);
-        lv_label_set_text(ml, "Manual");
+        lv_label_set_text(ml, TR(I18N_MODE_MANUAL));
         lv_obj_set_style_text_color(ml, lv_color_hex(0xffffff), 0);
         lv_obj_set_style_text_font(ml, SF(TS(22)), 0);
         lv_obj_center(ml);
@@ -3284,7 +3306,7 @@ lv_obj_t * screen_home_create(void) {
         lv_obj_add_event_cb(tile_btn_mode_program, on_mode_program,
                             LV_EVENT_CLICKED, NULL);
         lbl_t_program = lv_label_create(tile_btn_mode_program);
-        lv_label_set_text(lbl_t_program, "Program");
+        lv_label_set_text(lbl_t_program, TR(I18N_MODE_PROGRAM));
         lv_obj_set_style_text_color(lbl_t_program, lv_color_hex(0xffffff), 0);
         lv_obj_set_style_text_font(lbl_t_program, SF(TS(22)), 0);
         lv_obj_center(lbl_t_program);
@@ -3297,7 +3319,7 @@ lv_obj_t * screen_home_create(void) {
      * clip at 18-pt; row centred at +118 so it sits between the pill
      * (bottom ~y=276) and the metrics strip (top ~y=334). */
     {
-        const char * names[4] = {"Comfort", "Home", "Sleep", "Away"};
+        const char * names[4] = {TR(I18N_PRESET_COMFORT), TR(I18N_PRESET_HOME), TR(I18N_PRESET_SLEEP), TR(I18N_PRESET_AWAY)};
         uint32_t     cols[4]  = {0xcc7733, 0x3377cc, 0x553388, 0x557788};
         const int    bw = TS(78), bh = TS(34), gap = TS(4);
         int total = 4 * bw + 3 * gap;
@@ -3342,7 +3364,7 @@ lv_obj_t * screen_home_create(void) {
     lbl_t_humidity = lv_label_create(th);
     lv_obj_set_style_text_color(lbl_t_humidity, lv_color_hex(COL_TEXT_DIM), 0);
     lv_obj_set_style_text_font(lbl_t_humidity, SF(TS(18)), 0);
-    lv_label_set_text(lbl_t_humidity, "RH --%");
+    lv_label_set_text_fmt(lbl_t_humidity, "%s --%%", TR(I18N_RH));
     lv_obj_align(lbl_t_humidity, LV_ALIGN_BOTTOM_LEFT, TS(12), TS(8));
 
     lbl_t_ppm = lv_label_create(th);
@@ -3456,7 +3478,7 @@ lv_obj_t * screen_home_create(void) {
        milk carton for Plastic/PMD, leaf for GFT, trashcan fallback) so
        the user can read at a glance what's coming when. */
     tile_t waste_big;
-    make_tile(scr_root, 560, 20, 220, 200, LT_WASTE, "Waste", 0x88dd66,
+    make_tile(scr_root, 560, 20, 220, 200, LT_WASTE, TR(I18N_TILE_WASTE), 0x88dd66,
               open_placeholder, &waste_big);
     tile_waste = waste_big.tile;
 
@@ -3508,7 +3530,7 @@ lv_obj_t * screen_home_create(void) {
        on the Heater bottom strip). Big live power on top, gas total below,
        today's kWh in the corner. */
     tile_t energy_t;
-    make_tile(scr_root, 790, 20, 214, 130, LT_ENERGY, "Energy", 0xaa77ff,
+    make_tile(scr_root, 790, 20, 214, 130, LT_ENERGY, TR(I18N_TILE_ENERGY), 0xaa77ff,
               open_stats, &energy_t);
     tile_energy = energy_t.tile;
     /* Compressed for the new 130-px tile: 28-pt W value (was 48), gas
@@ -3537,7 +3559,7 @@ lv_obj_t * screen_home_create(void) {
        % above and rpm below the fan. Tap on the fan itself opens the remote
        (the buttons get their own click handlers so they don't bubble). */
     tile_t vent;
-    make_tile(scr_root, 560, 230, 220, 200, LT_VENT, "Vent", 0x66bbdd,
+    make_tile(scr_root, 560, 230, 220, 200, LT_VENT, TR(I18N_TILE_VENT), 0x66bbdd,
               (lv_event_cb_t)open_vent, &vent);
     tile_vent = vent.tile;
 
@@ -3569,10 +3591,10 @@ lv_obj_t * screen_home_create(void) {
      * FanInfo back, so UI code deals only in intuitive labels. */
     struct { lv_align_t a; int x, y; uint32_t col; const char * cmd;
              const char * txt; lv_event_cb_t cb; } btn[] = {
-        { LV_ALIGN_TOP_LEFT,     4,  46, 0x224d70, "low",  "Low",   on_vent_mode  },
-        { LV_ALIGN_TOP_RIGHT,   -4,  46, 0x804030, "high", "High",  on_vent_mode  },
-        { LV_ALIGN_BOTTOM_LEFT,  4,  -4, 0x2e6e3a, "auto", "Auto",  on_vent_mode  },
-        { LV_ALIGN_BOTTOM_RIGHT,-4,  -4, 0x6a5424, NULL,   "Timer", on_vent_timer },
+        { LV_ALIGN_TOP_LEFT,     4,  46, 0x224d70, "low",  TR(I18N_VENT_LOW),   on_vent_mode  },
+        { LV_ALIGN_TOP_RIGHT,   -4,  46, 0x804030, "high", TR(I18N_VENT_HIGH),  on_vent_mode  },
+        { LV_ALIGN_BOTTOM_LEFT,  4,  -4, 0x2e6e3a, "auto", TR(I18N_VENT_AUTO),  on_vent_mode  },
+        { LV_ALIGN_BOTTOM_RIGHT,-4,  -4, 0x6a5424, NULL,   TR(I18N_VENT_TIMER), on_vent_timer },
     };
     for (size_t i = 0; i < sizeof(btn)/sizeof(btn[0]); i++) {
         lv_obj_t * b = lv_btn_create(vent.tile);
@@ -3592,12 +3614,12 @@ lv_obj_t * screen_home_create(void) {
         lv_label_set_text(bl, btn[i].txt);
         lv_obj_center(bl);
         if (btn[i].cb == on_vent_timer) vent_timer_lbl = bl;
-        /* Refs keyed by the visible label, not the cmd — the two are inverted
-         * for low/high on this Itho. */
-        if      (strcmp(btn[i].txt, "Low")   == 0) vent_btn_low   = b;
-        else if (strcmp(btn[i].txt, "High")  == 0) vent_btn_high  = b;
-        else if (strcmp(btn[i].txt, "Auto")  == 0) vent_btn_auto  = b;
-        else if (btn[i].cb == on_vent_timer)       vent_btn_timer = b;
+        /* Keyed by the stable wire cmd (not the now-translated label): "low"
+         * and "high" map to the user-intent buttons, which this Itho inverts. */
+        if      (btn[i].cmd && strcmp(btn[i].cmd, "low")  == 0) vent_btn_low   = b;
+        else if (btn[i].cmd && strcmp(btn[i].cmd, "high") == 0) vent_btn_high  = b;
+        else if (btn[i].cmd && strcmp(btn[i].cmd, "auto") == 0) vent_btn_auto  = b;
+        else if (btn[i].cb == on_vent_timer)                   vent_btn_timer = b;
     }
 
     /* % + rpm + source on two lines just above the Auto/Timer buttons.
@@ -3614,7 +3636,7 @@ lv_obj_t * screen_home_create(void) {
     /* Family tile — Life360 locations for the two tracked people. Sits
      * between the shrunken Energy and Water tiles in the right column. */
     tile_t family_t;
-    make_tile(scr_root, 790, 160, 214, 130, LT_FAMILY, "Family", 0xff8866,
+    make_tile(scr_root, 790, 160, 214, 130, LT_FAMILY, TR(I18N_TILE_FAMILY), 0xff8866,
               open_family_map, &family_t);
     tile_family = family_t.tile;
     /* Two scrolling labels — the formatted address ("City > Street > Num")
@@ -3658,14 +3680,14 @@ lv_obj_t * screen_home_create(void) {
     lv_obj_align(lbl_life360_b, LV_ALIGN_TOP_LEFT, 0, 76);
 
     tile_t water_t;
-    make_tile(scr_root, 790, 300, 214, 130, LT_WATER, "Water", 0x44aaff, open_placeholder, &water_t);
+    make_tile(scr_root, 790, 300, 214, 130, LT_WATER, TR(I18N_TILE_WATER), 0x44aaff, open_placeholder, &water_t);
 
     /* Custom-layout-only tiles: a news-summary panel and a calendar/agenda tile.
      * Created only in custom layout mode (make_tile positions/hides them from
      * the grid); content is filled in refresh_cb. */
     if (settings.custom_layout_enabled) {
         tile_t nt, ct;
-        make_tile(scr_root, 0, 0, 200, 150, LT_NEWS_SUMMARY, "Nieuws", 0x6666aa, NULL, &nt);
+        make_tile(scr_root, 0, 0, 200, 150, LT_NEWS_SUMMARY, TR(I18N_TILE_NEWS), 0x6666aa, NULL, &nt);
         tile_news_sum_lbl = lv_label_create(nt.tile);
         lv_obj_set_style_text_color(tile_news_sum_lbl, lv_color_hex(COL_TEXT_HI), 0);
         lv_obj_set_style_text_font(tile_news_sum_lbl, SF(14), 0);
@@ -3674,7 +3696,7 @@ lv_obj_t * screen_home_create(void) {
         lv_obj_align(tile_news_sum_lbl, LV_ALIGN_TOP_LEFT, 0, 38);
         lv_label_set_text(tile_news_sum_lbl, "...");
 
-        make_tile(scr_root, 0, 0, 200, 150, LT_CALENDAR, "Agenda", 0x4477cc, NULL, &ct);
+        make_tile(scr_root, 0, 0, 200, 150, LT_CALENDAR, TR(I18N_TILE_AGENDA), 0x4477cc, NULL, &ct);
         tile_cal_lbl = lv_label_create(ct.tile);
         lv_obj_set_style_text_color(tile_cal_lbl, lv_color_hex(COL_TEXT_HI), 0);
         lv_obj_set_style_text_font(tile_cal_lbl, SF(14), 0);
@@ -3686,7 +3708,7 @@ lv_obj_t * screen_home_create(void) {
         /* Lights: a placeable button tile that opens the lights screen (the same
          * backend as the retractable side handle). Hidden until added in the editor. */
         tile_t lt;
-        make_tile(scr_root, 0, 0, 200, 150, LT_LIGHTS, "Verlichting", 0xddaa44, on_lights_tile, &lt);
+        make_tile(scr_root, 0, 0, 200, 150, LT_LIGHTS, TR(I18N_TILE_LIGHTS), 0xddaa44, on_lights_tile, &lt);
         lv_obj_t * ll = lv_label_create(lt.tile);
         lv_obj_set_style_text_color(ll, lv_color_hex(COL_TEXT_HI), 0);
         lv_obj_set_style_text_font(ll, SF(28), 0);
