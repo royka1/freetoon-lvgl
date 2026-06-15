@@ -280,6 +280,19 @@ static void on_scr_event(lv_event_t * e) {
     }
 }
 
+/* Push a device value onto a slider without fighting the user. refresh_cb runs
+ * every second; writing the slider unconditionally yanked the knob back to the
+ * device value mid-drag — so you had to hold the knob and time your release
+ * between ticks for the dragged position to actually take. Skip the write while
+ * the slider is being pressed, and otherwise only write when the value changed
+ * (avoids needless redraw churn). */
+static void slider_sync(lv_obj_t * s, int val) {
+    if (!s) return;
+    if (lv_obj_has_state(s, LV_STATE_PRESSED)) return;   /* user is dragging it */
+    if (lv_slider_get_value(s) == val) return;
+    lv_slider_set_value(s, val, LV_ANIM_OFF);
+}
+
 static void refresh_cb(lv_timer_t * t) {
     (void)t;
     ha_devices_sync_dz();            /* pull live Domoticz state into ha_devices[] */
@@ -295,8 +308,8 @@ static void refresh_cb(lv_timer_t * t) {
                 else
                     lv_label_set_text(R->lbl_state, D->state[0] ? D->state : "--");
             }
-            if (R->slider && D->position >= 0)
-                lv_slider_set_value(R->slider, D->position, LV_ANIM_OFF);
+            if (D->position >= 0)
+                slider_sync(R->slider, D->position);
         } else if (D->type == HADEV_LIGHT || D->type == HADEV_SWITCH) {
             const char * txt; uint32_t bcol; const char * blbl;
             if (!D->available)   { txt = "offline"; bcol = COL_OFFLINE; blbl = "Offline"; }
@@ -321,9 +334,9 @@ static void refresh_cb(lv_timer_t * t) {
                 else {
                     lv_obj_clear_state(R->slider, LV_STATE_DISABLED);
                     if (D->on && D->brightness > 0)
-                        lv_slider_set_value(R->slider, D->brightness * 100 / 255, LV_ANIM_OFF);
+                        slider_sync(R->slider, D->brightness * 100 / 255);
                     else if (!D->on)
-                        lv_slider_set_value(R->slider, 0, LV_ANIM_OFF);
+                        slider_sync(R->slider, 0);
                 }
             }
         } else if (D->type == HADEV_SELECT) {

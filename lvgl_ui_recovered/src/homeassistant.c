@@ -579,6 +579,11 @@ void ha_dev_cover(int idx, const char * cmd) {
 void ha_dev_position(int idx, int pct) {
     if (idx < 0 || idx >= ha_device_count) return;
     ha_device_t * D = &ha_devices[idx];
+    /* Optimistic: reflect the commanded position immediately so the 1 Hz UI
+     * refresh keeps the slider where the user left it, instead of snapping it
+     * back to the pre-move value while the (slow) cover travels. Live state
+     * events + the post-action poll then converge it to the real position. */
+    D->position = pct;
     if (D->backend == HADEV_BE_DZ) domoticz_set_level_async(D->dz_idx, pct);
     else                           ha_cover_set_position_async(D->entity_id, pct);
 }
@@ -1351,7 +1356,11 @@ static void dispatch_event(const char * msg) {
     char ent[96] = {0};
     extract_str(msg, "entity_id", ent, sizeof ent);   /* data.entity_id (first) */
     if (!ent[0]) return;
+    /* new_state = subscribe_events shape; to_state = subscribe_trigger shape.
+     * Both are a full state object {entity_id,state,attributes,…}, so the
+     * apply_* parsers below work unchanged on either. */
     const char * ns = strstr(msg, "\"new_state\"");
+    if (!ns) ns = strstr(msg, "\"to_state\"");
     if (!ns) return;
     /* Legacy fixed slots (curtain/blinds state+battery, life360, doorbell).
      * else-if: these are mutually exclusive by entity. No early return — the
@@ -1394,6 +1403,41 @@ static void * doorbell_thread(void * arg) {
     return NULL;
 }
 
+/* Collect every entity_id toonui reacts to on the live event stream, as a JSON
+ * array body ("a","b",...) for a filtered subscribe_trigger. Mirrors exactly
+ * the entities dispatch_event() routes (curtains, blinds, life360, doorbell,
+ * the configured HA energy sources, and the managed device/light lists), so we
+ * stop parsing every other entity's state_changed events. Duplicates are
+ * harmless (HA dedups). Returns the entity count. */
+static int ha_collect_live_entities(char * buf, size_t bufsz) {
+    int n = 0;
+    buf[0] = 0;
+#define HA_ADD(E) do {                                                        \
+        const char * _e = (E);                                                \
+        if (_e && _e[0]) {                                                     \
+            size_t _l = strlen(buf);                                           \
+            int _w = snprintf(buf + _l, bufsz - _l, "%s\"%s\"",               \
+                              n ? "," : "", _e);                               \
+            if (_w > 0 && (size_t)_w < bufsz - _l) n++;                        \
+        }                                                                     \
+    } while (0)
+    HA_ADD(CURTAIN_GROUP); HA_ADD(CURTAIN_LEFT); HA_ADD(CURTAIN_RIGHT);
+    HA_ADD(settings.blinds_entity);
+    HA_ADD(settings.blinds_bat_a); HA_ADD(settings.blinds_bat_b);
+    HA_ADD(settings.life360_a_entity); HA_ADD(settings.life360_b_entity);
+    HA_ADD(settings.doorbell_entity);
+    if (settings.energy_elec_source == ENERGY_SRC_HA) {
+        HA_ADD(settings.energy_elec_ha_entity);
+        HA_ADD(settings.energy_elec_prod_ha_entity);
+    }
+    if (settings.energy_gas_source   == ENERGY_SRC_HA) HA_ADD(settings.energy_gas_ha_entity);
+    if (settings.energy_water_source == ENERGY_SRC_HA) HA_ADD(settings.energy_water_ha_entity);
+    for (int i = 0; i < ha_device_count; i++) HA_ADD(ha_devices[i].entity_id);
+    for (int i = 0; i < ha_light_count;  i++) HA_ADD(ha_lights[i].entity_id);
+#undef HA_ADD
+    return n;
+}
+
 static void * ha_thread(void * arg) {
     (void)arg;
     srand((unsigned)time(NULL) ^ (unsigned)getpid());
@@ -1412,9 +1456,27 @@ static void * ha_thread(void * arg) {
             fprintf(stderr, "[ha] WS auth failed\n"); close(fd); sleep(15); continue;
         }
         seed_all();
-        const char * sub = "{\"id\":1,\"type\":\"subscribe_events\",\"event_type\":\"state_changed\"}";
+        /* Filtered live updates: subscribe to a state trigger for ONLY the
+         * entities toonui reacts to, not the whole state_changed firehose. On a
+         * busy HA this cuts the per-event receive+parse load to near zero (we
+         * were parsing every entity's every change to keep ~a dozen). The 60 s
+         * REST reseed below still refreshes anything configured after this
+         * point; a brand-new entity gets live push at the next reconnect. */
+        char ents[4096];
+        int nent = ha_collect_live_entities(ents, sizeof ents);
+        char sub[4352];
+        if (nent > 0)
+            snprintf(sub, sizeof sub,
+                     "{\"id\":1,\"type\":\"subscribe_trigger\",\"trigger\":"
+                     "{\"platform\":\"state\",\"entity_id\":[%s]}}", ents);
+        else
+            /* Nothing configured yet → keep the old firehose so a fresh device
+             * still updates live while entities are being set up. */
+            snprintf(sub, sizeof sub,
+                     "{\"id\":1,\"type\":\"subscribe_events\",\"event_type\":\"state_changed\"}");
         if (ws_send(fd, 0x1, (unsigned char *)sub, strlen(sub)) < 0) { close(fd); continue; }
-        fprintf(stderr, "[ha] WebSocket connected + subscribed to state_changed\n");
+        fprintf(stderr, "[ha] WebSocket connected + subscribed to %d entit%s\n",
+                nent, nent == 1 ? "y" : "ies");
         time_t last_ping = time(NULL), last_reseed = time(NULL);
         while (1) {
             fd_set rs; FD_ZERO(&rs); FD_SET(fd, &rs);
@@ -1424,7 +1486,10 @@ static void * ha_thread(void * arg) {
             if (s > 0) {
                 int n = ws_recv_msg(fd, msg, sizeof msg);
                 if (n < 0) break;
-                if (strstr(msg, "state_changed")) dispatch_event(msg);
+                /* "to_state" = subscribe_trigger payload; "state_changed" =
+                 * the fallback subscribe_events payload. Either routes here. */
+                if (strstr(msg, "to_state") || strstr(msg, "state_changed"))
+                    dispatch_event(msg);
             }
             time_t now = time(NULL);
             if (now - last_ping > 40) { if (ws_send(fd, 0x9, NULL, 0) < 0) break; last_ping = now; }
