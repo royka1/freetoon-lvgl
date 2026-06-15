@@ -6,6 +6,7 @@
 #include "screens.h"
 #include "display.h"
 #include "boxtalk.h"
+#include "i18n.h"
 #include "settings.h"
 #include "homewizard.h"
 #include "domoticz.h"
@@ -38,7 +39,8 @@ static lv_obj_t * scr_root = NULL;
 #define DIM_BAR_Y     45      /* vertical centre = the indoor-temp row */
 #define DIM_CLOCK_H   96      /* clock font px; envelope = 2x this */
 #define DIM_E_FULL_W    5000.0f   /* power at full bar height (fixed scale) */
-#define DIM_G_FULL_M3H  2.0f      /* gas (m³/h) at full bar height */
+#define DIM_G_FULL_M3H  2.0f      /* gas (m³/h) at full bar height (legacy) */
+#define DIM_G_FULL_DAY_M3H 15.0f   /* gas (m³) today at full bar height */
 static lv_obj_t * bar_l_env, * bar_l_fill, * bar_l_cap;
 static lv_obj_t * bar_r_env, * bar_r_fill, * bar_r_cap;
 static int   dim_bar_h = 0;        /* envelope height (px, computed at create) */
@@ -210,7 +212,17 @@ static void refresh_cb(lv_timer_t * t) {
     strftime(clk, sizeof(clk), "%H:%M", &tm);
     lv_label_set_text(lbl_clock, clk);
     char dt[64];
-    strftime(dt, sizeof(dt), "%A %d %B", &tm);
+    if (settings.lang == 1) {
+        /* Dutch full weekday + month — strftime would give English here. */
+        static const char * const nl_wd[7] = { "zondag","maandag","dinsdag","woensdag",
+                                                "donderdag","vrijdag","zaterdag" };
+        static const char * const nl_mon[12] = { "januari","februari","maart","april","mei","juni",
+                                                 "juli","augustus","september","oktober","november","december" };
+        snprintf(dt, sizeof dt, "%s %d %s",
+                 nl_wd[tm.tm_wday % 7], tm.tm_mday, nl_mon[tm.tm_mon % 12]);
+    } else {
+        strftime(dt, sizeof(dt), "%A %d %B", &tm);
+    }
     lv_label_set_text(lbl_date, dt);
 
     /* Moon (top-right, beside the current-weather icon): white at night,
@@ -236,7 +248,7 @@ static void refresh_cb(lv_timer_t * t) {
      * actively heating toward it (see screen_home.c for the same idea). */
     if (toon_state.setpoint > 0) {
         if (toon_state.burner_on)
-            lv_label_set_text_fmt(lbl_setpoint, "to %.1f°C", toon_state.setpoint);
+            lv_label_set_text_fmt(lbl_setpoint, "%s %.1f°C", TR(I18N_SETPOINT_TO), toon_state.setpoint);
         else
             lv_label_set_text_fmt(lbl_setpoint, "%.1f°C", toon_state.setpoint);
     } else {
@@ -375,9 +387,9 @@ static void refresh_cb(lv_timer_t * t) {
     if (dim_lbl_city) {
         if (settings.show_dim_weather && weather_state.connected) {
             const char * city = settings.weather_location[0]
-                                ? settings.weather_location : "Forecast";
-            lv_label_set_text_fmt(dim_lbl_city, "%s  -  %.1f°C now",
-                                  city, weather_state.current_temp);
+                                ? settings.weather_location : TR(I18N_FORECAST);
+            lv_label_set_text_fmt(dim_lbl_city, "%s  -  %.1f°C %s",
+                                  city, weather_state.current_temp, TR(I18N_NOW));
             lv_obj_clear_flag(dim_lbl_city, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(dim_lbl_city, LV_OBJ_FLAG_HIDDEN);
@@ -496,7 +508,7 @@ static void refresh_cb(lv_timer_t * t) {
     if (lbl_outside_wind) {
         if (settings.show_dim_weather && weather_state.connected &&
             weather_state.hour_count > 0 && weather_state.hours[0].wind_dir[0]) {
-            lv_label_set_text_fmt(lbl_outside_wind, "%s %d Bft",
+            lv_label_set_text_fmt(lbl_outside_wind, "%s%d Bft",
                                   weather_state.hours[0].wind_dir,
                                   weather_state.hours[0].wind_bft);
             lv_obj_clear_flag(lbl_outside_wind, LV_OBJ_FLAG_HIDDEN);
@@ -519,7 +531,7 @@ static void refresh_cb(lv_timer_t * t) {
                 lv_obj_set_style_img_recolor_opa(waste_icon, 255, 0);
 
                 long days_until = waste_days_until(wp.date);
-                const char * when = (days_until == 0) ? "Vandaag" : (days_until == 1) ? "Morgen" : NULL;
+                const char * when = (days_until == 0) ? TR(I18N_TODAY) : (days_until == 1) ? TR(I18N_TOMORROW) : NULL;
                 if (when) lv_label_set_text_fmt(lbl_waste, "%s: %s", when, l_clean);
                 else {
                     static const char * const nl_month[12] = {
@@ -532,7 +544,7 @@ static void refresh_cb(lv_timer_t * t) {
             } else {
                 lv_img_set_src(waste_icon, &icon_trash_lg);
                 lv_obj_set_style_img_recolor_opa(waste_icon, 100, 0); /* dimmed */
-                lv_label_set_text(lbl_waste, "Geen");
+                lv_label_set_text(lbl_waste, TR(I18N_NONE));
             }
             lv_obj_clear_flag(waste_icon, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(lbl_waste,  LV_OBJ_FLAG_HIDDEN);
@@ -570,20 +582,24 @@ static void refresh_cb(lv_timer_t * t) {
         if (net >= 1000) snprintf(etxt, sizeof etxt, "%.1f kW", net / 1000.0f);
         else             snprintf(etxt, sizeof etxt, "%.0f W", net);
 
-        /* Gas bar — per-source dispatch for hourly m³/h */
+        /* Gas bar — TODAY's accumulated usage (m³), taken from the persistent
+         * energy_hist daily total. The live per-source gas_hour_m3 counters
+         * re-baseline to 0 on a toonui restart; energy_hist restores today's
+         * running total from settings, so this survives a restart. The switch
+         * only gates visibility on whether the gas source is connected. */
         int   g_conn;
-        float g;
         switch (settings.energy_gas_source) {
-        case ENERGY_SRC_ZWAVE:    g_conn = meter_state.gas_connected; g = meter_state.gas_hour_m3; break;
-        case ENERGY_SRC_HW_P1:    g_conn = hw_state.connected_p1;     g = hw_state.gas_hour_m3; break;
-        case ENERGY_SRC_HA:       g_conn = ha_energy.connected;       g = ha_energy.gas_hour_m3; break;
-        case ENERGY_SRC_DOMOTICZ: g_conn = dz_energy.connected;       g = dz_energy.gas_hour_m3; break;
-        default:                  g_conn = 0; g = 0; break;
+        case ENERGY_SRC_ZWAVE:    g_conn = meter_state.gas_connected; break;
+        case ENERGY_SRC_HW_P1:    g_conn = hw_state.connected_p1;     break;
+        case ENERGY_SRC_HA:       g_conn = ha_energy.connected;       break;
+        case ENERGY_SRC_DOMOTICZ: g_conn = dz_energy.connected;       break;
+        default:                  g_conn = 0; break;
         }
+        float g = energy_hist_daily_gas_m3();
         if (g < 0) g = 0;
-        float gr = g / DIM_G_FULL_M3H;
+        float gr = g / DIM_G_FULL_DAY_M3H;
         char gtxt[24];
-        snprintf(gtxt, sizeof gtxt, "%.2f m3/h", g);
+        snprintf(gtxt, sizeof gtxt, "%.2f m3", g);
 
         int show = settings.show_dim_bars;
         if (!settings.dim_bars_swap) {
@@ -659,8 +675,8 @@ lv_obj_t * screen_dim_create(void) {
     lbl_setpoint = lv_label_create(scr_root);
     lv_obj_set_style_text_color(lbl_setpoint, lv_color_hex(0xbbbbbb), 0);
     lv_obj_set_style_text_font(lbl_setpoint, &lv_font_montserrat_28, 0);
-    lv_label_set_text(lbl_setpoint, "to -- C");
-    lv_obj_align(lbl_setpoint, LV_ALIGN_CENTER, 0, SY(115));
+    lv_label_set_text_fmt(lbl_setpoint, "%s -- C", TR(I18N_SETPOINT_TO));
+    lv_obj_align(lbl_setpoint, LV_ALIGN_CENTER, 0, SY(107));
 
     /* Active program — sits directly under the setpoint and above the
        air-quality / pressure metrics strip. Same vertical-ordering as the
@@ -669,7 +685,7 @@ lv_obj_t * screen_dim_create(void) {
     lv_obj_set_style_text_color(lbl_program, lv_color_hex(0xbbbbbb), 0);
     lv_obj_set_style_text_font(lbl_program, &lv_font_montserrat_22, 0);
     lv_label_set_text(lbl_program, "--");
-    lv_obj_align(lbl_program, LV_ALIGN_CENTER, 0, SY(140));
+    lv_obj_align(lbl_program, LV_ALIGN_CENTER, 0, SY(136));
 
     /* Air-quality + CH-pressure strip — moved below program so the TVOC /
        ppm / bar / AQ block doesn't shove the manual label off the layout.
@@ -687,7 +703,7 @@ lv_obj_t * screen_dim_create(void) {
     lbl_burner = lv_label_create(scr_root);
     lv_obj_set_style_text_font(lbl_burner, &lv_font_montserrat_22, 0);
     lv_label_set_text(lbl_burner, "");
-    lv_obj_align(lbl_burner, LV_ALIGN_CENTER, SX(80), SY(140));
+    lv_obj_align(lbl_burner, LV_ALIGN_CENTER, SX(80), SY(136));
     lv_obj_add_flag(lbl_burner, LV_OBJ_FLAG_HIDDEN);
 
     /* Toon-style radiator+flame glyph, parked to the right of the big indoor
@@ -788,7 +804,7 @@ lv_obj_t * screen_dim_create(void) {
     lbl_outside = lv_label_create(scr_root);
     lv_obj_set_style_text_color(lbl_outside, lv_color_hex(0xbbbbbb), 0);
     lv_obj_set_style_text_font(lbl_outside, &lv_font_montserrat_22, 0);
-    lv_label_set_text(lbl_outside, "Buiten");
+    lv_label_set_text(lbl_outside, TR(I18N_OUTSIDE));
     lv_obj_set_width(lbl_outside, SX(210));
     lv_obj_set_style_text_align(lbl_outside, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_align(lbl_outside, LV_ALIGN_TOP_RIGHT, SX(-56), SY(237));
