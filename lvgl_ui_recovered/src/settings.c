@@ -155,7 +155,7 @@ settings_t settings = {
     .pin_enabled         = 0,
     .pin_code            = "",
 
-    .lang                = 0,   /* English by default */
+    .lang                = 1,   /* Dutch by default */
 };
 
 float display_indoor_temp(float raw) {
