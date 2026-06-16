@@ -1397,14 +1397,17 @@ static void open_domoticz(lv_event_t * e) {
     lv_obj_align(b_apply, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     lv_obj_set_style_bg_color(b_apply, lv_color_hex(0xc06030), 0);
     lv_obj_add_event_cb(b_apply, on_domoticz_apply_click, LV_EVENT_CLICKED, NULL);
-    lv_obj_t * la = lv_label_create(b_apply); lv_label_set_text(la, "Save + connect"); lv_obj_center(la);
+    lv_obj_t * la = lv_label_create(b_apply); lv_label_set_text(la, TR(I18N_SAVE_CONNECT)); lv_obj_center(la);
 
-    lv_obj_t * b_view = lv_btn_create(p);
-    lv_obj_set_size(b_view, SX(240), SY(50));
-    lv_obj_align(b_view, LV_ALIGN_TOP_LEFT, SX(244), SY(y));
-    lv_obj_set_style_bg_color(b_view, lv_color_hex(0x2a4060), 0);
-    lv_obj_add_event_cb(b_view, on_domoticz_view_click, LV_EVENT_CLICKED, NULL);
-    lv_obj_t * lvw = lv_label_create(b_view); lv_label_set_text(lvw, "View lights/blinds"); lv_obj_center(lvw);
+    /* Manage devices: the same unified list as Settings -> Devices, but here
+     * the +add offers Domoticz devices. Takes the slot the old (now removed)
+     * "View lights/blinds" button used to occupy. */
+    lv_obj_t * b_mng = lv_btn_create(p);
+    lv_obj_set_size(b_mng, SX(300), SY(50));
+    lv_obj_align(b_mng, LV_ALIGN_TOP_LEFT, SX(244), SY(y));
+    lv_obj_set_style_bg_color(b_mng, lv_color_hex(0x2e7e5a), 0);
+    lv_obj_add_event_cb(b_mng, on_manage_devices_dz, LV_EVENT_CLICKED, NULL);
+    lv_obj_t * lm = lv_label_create(b_mng); lv_label_set_text(lm, TR(I18N_MANAGE_DEVICES)); lv_obj_center(lm);
     y += 64;
 
     lbl_domoticz_result = lv_label_create(p);
@@ -1413,19 +1416,8 @@ static void open_domoticz(lv_event_t * e) {
     lv_obj_set_width(lbl_domoticz_result, SX(770));
     lv_label_set_long_mode(lbl_domoticz_result, LV_LABEL_LONG_WRAP);
     lv_obj_align(lbl_domoticz_result, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
-    lv_label_set_text(lbl_domoticz_result,
-        "Set the Domoticz host, then Save + connect. Live updates use the\n"
-        "Domoticz WebSocket; no MQTT broker needed.");
+    lv_label_set_text(lbl_domoticz_result, TR(I18N_DZ_HINT));
     y += 64;
-
-    /* Manage devices: the same unified list as Settings -> Devices, but here
-     * the +add offers Domoticz devices. */
-    lv_obj_t * b_mng = lv_btn_create(p);
-    lv_obj_set_size(b_mng, SX(300), SY(50));
-    lv_obj_align(b_mng, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
-    lv_obj_set_style_bg_color(b_mng, lv_color_hex(0x2e7e5a), 0);
-    lv_obj_add_event_cb(b_mng, on_manage_devices_dz, LV_EVENT_CLICKED, NULL);
-    lv_obj_t * lm = lv_label_create(b_mng); lv_label_set_text(lm, "Manage devices..."); lv_obj_center(lm);
 }
 
 /* Client mode: this Toon mirrors a master Toon over its PWA API. */
@@ -1912,8 +1904,8 @@ static lv_obj_t * row_elec_dz,      * ta_elec_dz_idx;   /* Domoticz device idx f
 static lv_obj_t * row_elec_dz_prod, * ta_elec_dz_prod_idx;
 static lv_obj_t * row_gas_dz,       * ta_gas_dz_idx;
 static lv_obj_t * row_water_dz, * ta_water_dz_idx;
-static lv_obj_t * lbl_gas_header;    /* "Gas source:" label — repositioned on elec change */
-static lv_obj_t * lbl_water_header;  /* "Water source:" label */
+static lv_obj_t * lbl_gas_header;    /* TR(I18N_GAS_SOURCE) label — repositioned on elec change */
+static lv_obj_t * lbl_water_header;  /* TR(I18N_WATER_SOURCE) label */
 static lv_obj_t * toggle_vent_row;   /* first toggle row after the energy section */
 static lv_obj_t * toggle_ha_row;
 static lv_obj_t * toggle_hide_row;
@@ -2233,7 +2225,7 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lv_obj_t * le = lv_label_create(p);
     lv_obj_set_style_text_color(le, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(le, SF(22), 0);
-    lv_label_set_text(le, "Electricity source:");
+    lv_label_set_text(le, TR(I18N_ELEC_SOURCE));
     lv_obj_align(le, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     dd_elec_src = lv_dropdown_create(p);
     lv_obj_align(dd_elec_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
@@ -2251,7 +2243,7 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_elec_ha_cons, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_elec_ha_cons, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_elec_ha_cons = energy_field(row_elec_ha_cons, 4, -6, 760,
-        "HA consumption sensor (W):", settings.energy_elec_ha_entity, 1, "sensor");
+        TR(I18N_HA_CONS_SENSOR), settings.energy_elec_ha_entity, 1, "sensor");
     if (settings.energy_elec_source != ENERGY_SRC_HA)
         lv_obj_add_flag(row_elec_ha_cons, LV_OBJ_FLAG_HIDDEN);
 
@@ -2264,7 +2256,7 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_elec_ha_prod, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_elec_ha_prod, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 144));
     ta_elec_ha_prod = energy_field(row_elec_ha_prod, 4, -6, 760,
-        "HA production/solar sensor (W, optional):", settings.energy_elec_prod_ha_entity, 1, "sensor");
+        TR(I18N_HA_PROD_SENSOR), settings.energy_elec_prod_ha_entity, 1, "sensor");
     if (settings.energy_elec_source != ENERGY_SRC_HA)
         lv_obj_add_flag(row_elec_ha_prod, LV_OBJ_FLAG_HIDDEN);
 
@@ -2277,12 +2269,12 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_elec_hw_host, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_elec_hw_host, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_elec_hw_host = energy_field(row_elec_hw_host, 4, -6, 760,
-        "HomeWizard P1 host (shared with gas):", settings.p1_elec_host, 0, NULL);
+        TR(I18N_HWP1_HOST), settings.p1_elec_host, 0, NULL);
     ta_make_numeric(ta_elec_hw_host);
     if (settings.energy_elec_source != ENERGY_SRC_HW_P1)
         lv_obj_add_flag(row_elec_hw_host, LV_OBJ_FLAG_HIDDEN);
 
-    row_elec_dz = make_dz_row(p, "Domoticz device idx (P1 electricity):",
+    row_elec_dz = make_dz_row(p, TR(I18N_DZ_ELEC_IDX),
                               settings.energy_elec_dz_idx, &ta_elec_dz_idx);
     if (settings.energy_elec_source != ENERGY_SRC_DOMOTICZ)
         lv_obj_add_flag(row_elec_dz, LV_OBJ_FLAG_HIDDEN);
@@ -2300,7 +2292,7 @@ static void open_energy_sources_modal(lv_event_t * e) {
             snprintf(b, sizeof b, "%d", settings.energy_elec_prod_dz_idx);
         else b[0] = 0;
         ta_elec_dz_prod_idx = energy_field(row_elec_dz_prod, 4, -6, 760,
-            "Domoticz production/solar idx (optional):", b, 0, NULL);
+            TR(I18N_DZ_PROD_IDX), b, 0, NULL);
         ta_make_numeric(ta_elec_dz_prod_idx);
     }
     if (settings.energy_elec_source != ENERGY_SRC_DOMOTICZ)
@@ -2312,7 +2304,7 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lbl_gas_header = lv_label_create(p);
     lv_obj_set_style_text_color(lbl_gas_header, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lbl_gas_header, SF(22), 0);
-    lv_label_set_text(lbl_gas_header, "Gas source:");
+    lv_label_set_text(lbl_gas_header, TR(I18N_GAS_SOURCE));
     lv_obj_align(lbl_gas_header, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     dd_gas_src = lv_dropdown_create(p);
     lv_obj_align(dd_gas_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
@@ -2330,7 +2322,7 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_gas_ha, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_gas_ha, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_gas_ha = energy_field(row_gas_ha, 4, -6, 760,
-        "HA gas sensor (m3):", settings.energy_gas_ha_entity, 1, "sensor");
+        TR(I18N_HA_GAS_SENSOR), settings.energy_gas_ha_entity, 1, "sensor");
     if (settings.energy_gas_source != ENERGY_SRC_HA)
         lv_obj_add_flag(row_gas_ha, LV_OBJ_FLAG_HIDDEN);
 
@@ -2345,12 +2337,12 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lv_obj_t * ghn = lv_label_create(row_gas_hw_note);
     lv_obj_set_style_text_color(ghn, lv_color_hex(0x88aabb), 0);
     lv_obj_set_style_text_font(ghn, SF(16), 0);
-    lv_label_set_text(ghn, "Uses the same HomeWizard P1 host as electricity.");
+    lv_label_set_text(ghn, TR(I18N_HWWTR_NOTE));
     lv_obj_align(ghn, LV_ALIGN_TOP_LEFT, SX(4), SY(0));
     if (settings.energy_gas_source != ENERGY_SRC_HW_P1)
         lv_obj_add_flag(row_gas_hw_note, LV_OBJ_FLAG_HIDDEN);
 
-    row_gas_dz = make_dz_row(p, "Domoticz device idx (gas meter):",
+    row_gas_dz = make_dz_row(p, TR(I18N_DZ_GAS_IDX),
                              settings.energy_gas_dz_idx, &ta_gas_dz_idx);
     if (settings.energy_gas_source != ENERGY_SRC_DOMOTICZ)
         lv_obj_add_flag(row_gas_dz, LV_OBJ_FLAG_HIDDEN);
@@ -2361,7 +2353,7 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lbl_water_header = lv_label_create(p);
     lv_obj_set_style_text_color(lbl_water_header, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lbl_water_header, SF(22), 0);
-    lv_label_set_text(lbl_water_header, "Water source:");
+    lv_label_set_text(lbl_water_header, TR(I18N_WATER_SOURCE));
     lv_obj_align(lbl_water_header, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     dd_water_src = lv_dropdown_create(p);
     lv_obj_align(dd_water_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
@@ -2379,7 +2371,7 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_water_ha, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_water_ha, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_water_ha = energy_field(row_water_ha, 4, -6, 760,
-        "HA water sensor (m3):", settings.energy_water_ha_entity, 1, "sensor");
+        TR(I18N_HA_WATER_SENSOR), settings.energy_water_ha_entity, 1, "sensor");
     if (settings.energy_water_source != ENERGY_SRC_HA)
         lv_obj_add_flag(row_water_ha, LV_OBJ_FLAG_HIDDEN);
 
@@ -2392,12 +2384,12 @@ static void open_energy_sources_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_water_hw_host, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_water_hw_host, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_water_hw_host = energy_field(row_water_hw_host, 4, -6, 760,
-        "HomeWizard HWE-WTR host:", settings.p1_water_host, 0, NULL);
+        TR(I18N_HWWTR_HOST), settings.p1_water_host, 0, NULL);
     ta_make_numeric(ta_water_hw_host);
     if (settings.energy_water_source != ENERGY_SRC_HW_P1)
         lv_obj_add_flag(row_water_hw_host, LV_OBJ_FLAG_HIDDEN);
 
-    row_water_dz = make_dz_row(p, "Domoticz device idx (water meter):",
+    row_water_dz = make_dz_row(p, TR(I18N_DZ_WATER_IDX),
                                settings.energy_water_dz_idx, &ta_water_dz_idx);
     if (settings.energy_water_source != ENERGY_SRC_DOMOTICZ)
         lv_obj_add_flag(row_water_dz, LV_OBJ_FLAG_HIDDEN);
@@ -2409,7 +2401,7 @@ static void open_integrations_modal(lv_event_t * e) {
     (void)e;
     /* Energy source section (3 dropdowns + conditional fields) + 3 switches
      * + hint + HA button. Modal height bumped to fit everything. */
-    lv_obj_t * p = modal_open("Integrations", 1100);
+    lv_obj_t * p = modal_open(TR(I18N_INTEGRATIONS), 1100);
     modal_cleanup_fn = energy_modal_cleanup;
     lv_obj_add_flag(p, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scroll_dir(p, LV_DIR_VER);
@@ -2420,7 +2412,7 @@ static void open_integrations_modal(lv_event_t * e) {
     lv_obj_t * le = lv_label_create(p);
     lv_obj_set_style_text_color(le, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(le, SF(22), 0);
-    lv_label_set_text(le, "Electricity source:");
+    lv_label_set_text(le, TR(I18N_ELEC_SOURCE));
     lv_obj_align(le, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     dd_elec_src = lv_dropdown_create(p);
     lv_obj_align(dd_elec_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
@@ -2439,7 +2431,7 @@ static void open_integrations_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_elec_ha_cons, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_elec_ha_cons, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_elec_ha_cons = energy_field(row_elec_ha_cons, 4, -6, 760,
-        "HA consumption sensor (W):", settings.energy_elec_ha_entity, 1, "sensor");
+        TR(I18N_HA_CONS_SENSOR), settings.energy_elec_ha_entity, 1, "sensor");
     if (settings.energy_elec_source != ENERGY_SRC_HA)
         lv_obj_add_flag(row_elec_ha_cons, LV_OBJ_FLAG_HIDDEN);
 
@@ -2453,7 +2445,7 @@ static void open_integrations_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_elec_ha_prod, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_elec_ha_prod, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 144));
     ta_elec_ha_prod = energy_field(row_elec_ha_prod, 4, -6, 760,
-        "HA production/solar sensor (W, optional):", settings.energy_elec_prod_ha_entity, 1, "sensor");
+        TR(I18N_HA_PROD_SENSOR), settings.energy_elec_prod_ha_entity, 1, "sensor");
     if (settings.energy_elec_source != ENERGY_SRC_HA)
         lv_obj_add_flag(row_elec_ha_prod, LV_OBJ_FLAG_HIDDEN);
 
@@ -2467,12 +2459,12 @@ static void open_integrations_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_elec_hw_host, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_elec_hw_host, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_elec_hw_host = energy_field(row_elec_hw_host, 4, -6, 760,
-        "HomeWizard P1 host (shared with gas):", settings.p1_elec_host, 0, NULL);
+        TR(I18N_HWP1_HOST), settings.p1_elec_host, 0, NULL);
     ta_make_numeric(ta_elec_hw_host);
     if (settings.energy_elec_source != ENERGY_SRC_HW_P1)
         lv_obj_add_flag(row_elec_hw_host, LV_OBJ_FLAG_HIDDEN);
 
-    row_elec_dz = make_dz_row(p, "Domoticz device idx (P1 electricity):",
+    row_elec_dz = make_dz_row(p, TR(I18N_DZ_ELEC_IDX),
                               settings.energy_elec_dz_idx, &ta_elec_dz_idx);
     if (settings.energy_elec_source != ENERGY_SRC_DOMOTICZ)
         lv_obj_add_flag(row_elec_dz, LV_OBJ_FLAG_HIDDEN);
@@ -2490,7 +2482,7 @@ static void open_integrations_modal(lv_event_t * e) {
             snprintf(b, sizeof b, "%d", settings.energy_elec_prod_dz_idx);
         else b[0] = 0;
         ta_elec_dz_prod_idx = energy_field(row_elec_dz_prod, 4, -6, 760,
-            "Domoticz production/solar idx (optional):", b, 0, NULL);
+            TR(I18N_DZ_PROD_IDX), b, 0, NULL);
         ta_make_numeric(ta_elec_dz_prod_idx);
     }
     if (settings.energy_elec_source != ENERGY_SRC_DOMOTICZ)
@@ -2502,7 +2494,7 @@ static void open_integrations_modal(lv_event_t * e) {
     lbl_gas_header = lv_label_create(p);
     lv_obj_set_style_text_color(lbl_gas_header, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lbl_gas_header, SF(22), 0);
-    lv_label_set_text(lbl_gas_header, "Gas source:");
+    lv_label_set_text(lbl_gas_header, TR(I18N_GAS_SOURCE));
     lv_obj_align(lbl_gas_header, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     dd_gas_src = lv_dropdown_create(p);
     lv_obj_align(dd_gas_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
@@ -2520,7 +2512,7 @@ static void open_integrations_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_gas_ha, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_gas_ha, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_gas_ha = energy_field(row_gas_ha, 4, -6, 760,
-        "HA gas sensor (m3):", settings.energy_gas_ha_entity, 1, "sensor");
+        TR(I18N_HA_GAS_SENSOR), settings.energy_gas_ha_entity, 1, "sensor");
     if (settings.energy_gas_source != ENERGY_SRC_HA)
         lv_obj_add_flag(row_gas_ha, LV_OBJ_FLAG_HIDDEN);
 
@@ -2535,12 +2527,12 @@ static void open_integrations_modal(lv_event_t * e) {
     lv_obj_t * ghn = lv_label_create(row_gas_hw_note);
     lv_obj_set_style_text_color(ghn, lv_color_hex(0x88aabb), 0);
     lv_obj_set_style_text_font(ghn, SF(16), 0);
-    lv_label_set_text(ghn, "Uses the same HomeWizard P1 host as electricity.");
+    lv_label_set_text(ghn, TR(I18N_HWWTR_NOTE));
     lv_obj_align(ghn, LV_ALIGN_TOP_LEFT, SX(4), SY(0));
     if (settings.energy_gas_source != ENERGY_SRC_HW_P1)
         lv_obj_add_flag(row_gas_hw_note, LV_OBJ_FLAG_HIDDEN);
 
-    row_gas_dz = make_dz_row(p, "Domoticz device idx (gas meter):",
+    row_gas_dz = make_dz_row(p, TR(I18N_DZ_GAS_IDX),
                              settings.energy_gas_dz_idx, &ta_gas_dz_idx);
     if (settings.energy_gas_source != ENERGY_SRC_DOMOTICZ)
         lv_obj_add_flag(row_gas_dz, LV_OBJ_FLAG_HIDDEN);
@@ -2551,7 +2543,7 @@ static void open_integrations_modal(lv_event_t * e) {
     lbl_water_header = lv_label_create(p);
     lv_obj_set_style_text_color(lbl_water_header, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lbl_water_header, SF(22), 0);
-    lv_label_set_text(lbl_water_header, "Water source:");
+    lv_label_set_text(lbl_water_header, TR(I18N_WATER_SOURCE));
     lv_obj_align(lbl_water_header, LV_ALIGN_TOP_LEFT, SX(4), SY(y));
     dd_water_src = lv_dropdown_create(p);
     lv_obj_align(dd_water_src, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 28));
@@ -2569,7 +2561,7 @@ static void open_integrations_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_water_ha, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_water_ha, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_water_ha = energy_field(row_water_ha, 4, -6, 760,
-        "HA water sensor (m3):", settings.energy_water_ha_entity, 1, "sensor");
+        TR(I18N_HA_WATER_SENSOR), settings.energy_water_ha_entity, 1, "sensor");
     if (settings.energy_water_source != ENERGY_SRC_HA)
         lv_obj_add_flag(row_water_ha, LV_OBJ_FLAG_HIDDEN);
 
@@ -2582,7 +2574,7 @@ static void open_integrations_modal(lv_event_t * e) {
     lv_obj_clear_flag(row_water_hw_host, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(row_water_hw_host, LV_ALIGN_TOP_LEFT, SX(4), SY(y + 74));
     ta_water_hw_host = energy_field(row_water_hw_host, 4, -6, 760,
-        "HomeWizard HWE-WTR host:", settings.p1_water_host, 0, NULL);
+        TR(I18N_HWWTR_HOST), settings.p1_water_host, 0, NULL);
     ta_make_numeric(ta_water_hw_host);
     if (settings.energy_water_source != ENERGY_SRC_HW_P1)
         lv_obj_add_flag(row_water_hw_host, LV_OBJ_FLAG_HIDDEN);
@@ -2596,7 +2588,7 @@ static void open_integrations_modal(lv_event_t * e) {
     sw_int_ha = row_switch(toggle_ha_row, settings.enable_ha, on_int_ha);
     y += 84;
 
-    toggle_hide_row = panel_row(p, y, "Hide offline tiles entirely", NULL);
+    toggle_hide_row = panel_row(p, y, TR(I18N_HIDE_OFFLINE), NULL);
     sw_int_hide_offline = row_switch(toggle_hide_row, settings.hide_offline_tiles, on_int_hide_offline);
     y += 92;
 
@@ -2754,7 +2746,7 @@ static void on_ha_entities_save(lv_event_t * e) {
 
 /* Open the dynamic device manager (add/remove/pin lights, covers, switches,
  * scripts, scenes). It's a full SCREEN, which renders under the top-layer
- * Settings modals — so dismiss the "HA entities" + "Integrations" modals first,
+ * Settings modals — so dismiss the "HA entities" + TR(I18N_INTEGRATIONS) modals first,
  * or the manager opens hidden behind them. Closing them also makes popping back
  * land cleanly on Settings (no stale modals), and the manager is a destination,
  * not a sub-dialog you bounce out of. */
@@ -2784,7 +2776,7 @@ static void open_ha_entities_modal(lv_event_t * e) {
     lv_obj_t * lh = lv_label_create(p);
     lv_obj_set_style_text_color(lh, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(lh, SF(22), 0);
-    lv_label_set_text(lh, "HA host (ip:port):");
+    lv_label_set_text(lh, TR(I18N_HA_HOST));
     lv_obj_align(lh, LV_ALIGN_TOP_LEFT, SX(4), y);
     ta_ha_host = lv_textarea_create(p);
     lv_obj_set_size(ta_ha_host, tw, SY(44));
@@ -2818,7 +2810,7 @@ static void open_ha_entities_modal(lv_event_t * e) {
         lv_obj_t * bml = lv_label_create(bm);
         lv_obj_set_style_text_color(bml, lv_color_hex(0xffffff), 0);
         lv_obj_set_style_text_font(bml, SF(20), 0);
-        lv_label_set_text(bml, "Manage devices...");
+        lv_label_set_text(bml, TR(I18N_MANAGE_DEVICES));
         lv_obj_center(bml);
         y += 60;
     }
@@ -2830,15 +2822,15 @@ static void open_ha_entities_modal(lv_event_t * e) {
     lv_label_set_text(lsec, "\xE2\x94\x80\xE2\x94\x80 Doorbell \xE2\x94\x80\xE2\x94\x80");
     lv_obj_align(lsec, LV_ALIGN_TOP_LEFT, SX(4), y);
     y += 36;
-    y = ha_field_row(p, y, "Trigger entity:", settings.doorbell_entity, "binary_sensor.deurbel", tw, &ta_doorbell_entity, "binary_sensor");
-    y = ha_field_row(p, y, "Camera entity:", settings.doorbell_camera, "camera.voordeur", tw, &ta_doorbell_camera, "camera");
-    y = ha_field_row(p, y, "Show seconds (3-300):", NULL, "30", SX(120), &ta_doorbell_seconds, NULL);
+    y = ha_field_row(p, y, TR(I18N_TRIGGER_ENTITY), settings.doorbell_entity, "binary_sensor.deurbel", tw, &ta_doorbell_entity, "binary_sensor");
+    y = ha_field_row(p, y, TR(I18N_CAMERA_ENTITY), settings.doorbell_camera, "camera.voordeur", tw, &ta_doorbell_camera, "camera");
+    y = ha_field_row(p, y, TR(I18N_SHOW_SECONDS), NULL, "30", SX(120), &ta_doorbell_seconds, NULL);
     if (ta_doorbell_seconds) {
         char sec_str[8];
         snprintf(sec_str, sizeof(sec_str), "%d", settings.doorbell_seconds);
         lv_textarea_set_text(ta_doorbell_seconds, sec_str);
     }
-    y = ha_field_row(p, y, "MJPEG stream URL:", settings.doorbell_stream_url, "http://.../stream.mjpeg", tw, &ta_doorbell_stream, NULL);
+    y = ha_field_row(p, y, TR(I18N_MJPEG_URL), settings.doorbell_stream_url, "http://.../stream.mjpeg", tw, &ta_doorbell_stream, NULL);
     y += 8;
 
     /* ── Family / Life360 ── */
@@ -2848,10 +2840,10 @@ static void open_ha_entities_modal(lv_event_t * e) {
     lv_label_set_text(lsec, "\xE2\x94\x80\xE2\x94\x80 Family \xE2\x94\x80\xE2\x94\x80");
     lv_obj_align(lsec, LV_ALIGN_TOP_LEFT, SX(4), y);
     y += 36;
-    y = ha_field_row(p, y, "Person A entity:", settings.life360_a_entity, "device_tracker.life360_alice", tw, &ta_life360_a_entity, "device_tracker");
-    y = ha_field_row(p, y, "Person A name:", settings.life360_a_name, "Alice", tw, &ta_life360_a_name, NULL);
-    y = ha_field_row(p, y, "Person B entity:", settings.life360_b_entity, "device_tracker.life360_bob", tw, &ta_life360_b_entity, "device_tracker");
-    y = ha_field_row(p, y, "Person B name:", settings.life360_b_name, "Bob", tw, &ta_life360_b_name, NULL);
+    y = ha_field_row(p, y, TR(I18N_PERSON_A_ENTITY), settings.life360_a_entity, "device_tracker.life360_alice", tw, &ta_life360_a_entity, "device_tracker");
+    y = ha_field_row(p, y, TR(I18N_PERSON_A_NAME), settings.life360_a_name, "Alice", tw, &ta_life360_a_name, NULL);
+    y = ha_field_row(p, y, TR(I18N_PERSON_B_ENTITY), settings.life360_b_entity, "device_tracker.life360_bob", tw, &ta_life360_b_entity, "device_tracker");
+    y = ha_field_row(p, y, TR(I18N_PERSON_B_NAME), settings.life360_b_name, "Bob", tw, &ta_life360_b_name, NULL);
     y += 8;
 
     /* ── Calendar ── */
@@ -2861,7 +2853,7 @@ static void open_ha_entities_modal(lv_event_t * e) {
     lv_label_set_text(lsec, "\xE2\x94\x80\xE2\x94\x80 Calendar \xE2\x94\x80\xE2\x94\x80");
     lv_obj_align(lsec, LV_ALIGN_TOP_LEFT, SX(4), y);
     y += 36;
-    y = ha_field_row(p, y, "HA calendar entity:", settings.calendar_ha_entity, "calendar.gezin", tw, &ta_calendar_ha_entity, "calendar");
+    y = ha_field_row(p, y, TR(I18N_HA_CAL_ENTITY), settings.calendar_ha_entity, "calendar.gezin", tw, &ta_calendar_ha_entity, "calendar");
     y += 16;
 
     /* Save button */
@@ -2873,7 +2865,7 @@ static void open_ha_entities_modal(lv_event_t * e) {
     lv_obj_add_event_cb(b_save, on_ha_entities_save, LV_EVENT_CLICKED, NULL);
     lv_obj_t * bsl = lv_label_create(b_save);
     lv_obj_set_style_text_color(bsl, lv_color_hex(0xffffff), 0);
-    lv_label_set_text(bsl, "Save & close");
+    lv_label_set_text(bsl, TR(I18N_SAVE_CLOSE));
     lv_obj_center(bsl);
 }
 
@@ -3603,51 +3595,6 @@ static void open_otbridge_modal(lv_event_t * e) {
 
 static void on_back(lv_event_t * e) { (void)e; ui_pop(); }
 
-/* --------- Clean-screen overlay: 30 s timer that ignores all touch -------
- * Loads a full-black screen with a single centred countdown so the user can
- * wipe the glass without triggering buttons. The screen has zero event
- * handlers — taps reach the LVGL input layer and find nothing actionable.
- * Backlight stays at the current "active" level so the countdown stays
- * readable; the LCD is 99% black anyway, which reads as "off". On expiry
- * the screen pops itself back to settings. */
-static lv_obj_t *  g_clean_scr  = NULL;
-static lv_obj_t *  g_clean_lbl  = NULL;
-static lv_timer_t * g_clean_tmr = NULL;
-static int         g_clean_remaining = 0;
-
-static void clean_finish(void) {
-    if (g_clean_tmr) { lv_timer_del(g_clean_tmr); g_clean_tmr = NULL; }
-    if (g_clean_scr) {
-        lv_obj_t * dead = g_clean_scr;
-        g_clean_scr = NULL; g_clean_lbl = NULL;
-        ui_pop();
-        lv_obj_del_async(dead);
-    }
-}
-
-static void clean_tick(lv_timer_t * t) {
-    (void)t;
-    g_clean_remaining--;
-    if (g_clean_remaining <= 0) { clean_finish(); return; }
-    if (g_clean_lbl) lv_label_set_text_fmt(g_clean_lbl, "%d", g_clean_remaining);
-}
-
-static void open_clean_modal(lv_event_t * e) {
-    (void)e;
-    g_clean_remaining = 30;
-    g_clean_scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(g_clean_scr, lv_color_hex(0x000000), 0);
-    lv_obj_clear_flag(g_clean_scr, LV_OBJ_FLAG_SCROLLABLE);
-    /* No event_cb anywhere on this screen → touches do nothing. */
-    g_clean_lbl = lv_label_create(g_clean_scr);
-    lv_obj_set_style_text_color(g_clean_lbl, lv_color_hex(0xffffff), 0);
-    LV_FONT_DECLARE(lv_font_montserrat_96_custom);
-    lv_obj_set_style_text_font(g_clean_lbl, SF(96), 0);
-    lv_label_set_text_fmt(g_clean_lbl, "%d", g_clean_remaining);
-    lv_obj_center(g_clean_lbl);
-    ui_push(g_clean_scr);
-    g_clean_tmr = lv_timer_create(clean_tick, 1000, NULL);
-}
 
 /* One category tile: icon (optional), big title, caption. */
 /* Compact category tile — 4 fit per row. Was 308x188 with 28pt fonts
@@ -4552,7 +4499,6 @@ static lv_obj_t * screen_settings_category_create(char cat) {
         TILE(LV_SYMBOL_HOME,     I18N_TILE_SLOTS,     I18N_TILE_SLOTS_DESC,     open_tile_slots_modal);
         TILE(LV_SYMBOL_EDIT,     I18N_LAYOUT_EDITOR,  I18N_LAYOUT_EDITOR_DESC,  open_layout_editor);
         TILE(LV_SYMBOL_LOOP,     I18N_AUTO_ROTATE,    I18N_AUTO_ROTATE_DESC,    open_rotate_modal);
-        TILE(LV_SYMBOL_EYE_CLOSE,I18N_CLEAN,          I18N_CLEAN_DESC,          open_clean_modal);
         TILE(LV_SYMBOL_LIST,     I18N_DIM_CONTENT,    I18N_DIM_CONTENT_DESC,    open_dim_content_modal);
         break;
 
