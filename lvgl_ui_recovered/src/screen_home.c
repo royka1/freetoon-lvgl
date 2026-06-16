@@ -915,7 +915,7 @@ static void open_about_modal(lv_event_t * e) {
     lv_obj_t * au_lbl = lv_label_create(panel);
     lv_obj_set_style_text_font(au_lbl, SF(18), 0);
     lv_obj_set_style_text_color(au_lbl, lv_color_hex(0xc8d4e0), 0);
-    lv_label_set_text_fmt(au_lbl, "Auto-update nightly (~%02d:00)", settings.auto_update_hour);
+    lv_label_set_text_fmt(au_lbl, TR(I18N_AUTO_UPDATE_FMT), settings.auto_update_hour);
     lv_obj_align(au_lbl, LV_ALIGN_TOP_LEFT, 0, SY(350));
     lv_obj_t * au_sw = lv_switch_create(panel);
     lv_obj_align(au_sw, LV_ALIGN_TOP_LEFT, SX(320), SY(344));
@@ -926,7 +926,7 @@ static void open_about_modal(lv_event_t * e) {
     lv_obj_t * ch_lbl = lv_label_create(panel);
     lv_obj_set_style_text_font(ch_lbl, SF(18), 0);
     lv_obj_set_style_text_color(ch_lbl, lv_color_hex(0xc8d4e0), 0);
-    lv_label_set_text(ch_lbl, "Beta / dev");
+    lv_label_set_text(ch_lbl, TR(I18N_BETA_DEV));
     lv_obj_align(ch_lbl, LV_ALIGN_TOP_LEFT, SX(430), SY(350));
     lv_obj_t * ch_sw = lv_switch_create(panel);
     lv_obj_align(ch_sw, LV_ALIGN_TOP_LEFT, SX(600), SY(344));
@@ -941,7 +941,7 @@ static void open_about_modal(lv_event_t * e) {
     lv_obj_add_event_cb(b_check, do_check_updates, LV_EVENT_CLICKED, NULL);
     lv_obj_t * cl = lv_label_create(b_check);
     lv_obj_set_style_text_font(cl, SF(18), 0);
-    lv_label_set_text(cl, "Check"); lv_obj_center(cl);
+    lv_label_set_text(cl, TR(I18N_CHECK)); lv_obj_center(cl);
 
     if (g_update_state.available) {
         lv_obj_t * b_inst = lv_btn_create(panel);
@@ -951,7 +951,7 @@ static void open_about_modal(lv_event_t * e) {
         lv_obj_add_event_cb(b_inst, do_install_now, LV_EVENT_CLICKED, NULL);
         lv_obj_t * il = lv_label_create(b_inst);
         lv_obj_set_style_text_font(il, SF(18), 0);
-        lv_label_set_text(il, "Install now"); lv_obj_center(il);
+        lv_label_set_text(il, TR(I18N_INSTALL_NOW)); lv_obj_center(il);
 
         lv_obj_t * b_skip = lv_btn_create(panel);
         lv_obj_set_size(b_skip, SX(96), SY(56));
@@ -960,7 +960,7 @@ static void open_about_modal(lv_event_t * e) {
         lv_obj_add_event_cb(b_skip, do_skip_version, LV_EVENT_CLICKED, NULL);
         lv_obj_t * sl = lv_label_create(b_skip);
         lv_obj_set_style_text_font(sl, SF(18), 0);
-        lv_label_set_text(sl, "Skip"); lv_obj_center(sl);
+        lv_label_set_text(sl, TR(I18N_SKIP)); lv_obj_center(sl);
 
         lv_obj_t * b_dis = lv_btn_create(panel);
         lv_obj_set_size(b_dis, SX(130), SY(56));
@@ -969,7 +969,7 @@ static void open_about_modal(lv_event_t * e) {
         lv_obj_add_event_cb(b_dis, do_dismiss_to_envelope, LV_EVENT_CLICKED, NULL);
         lv_obj_t * dl = lv_label_create(b_dis);
         lv_obj_set_style_text_font(dl, SF(18), 0);
-        lv_label_set_text(dl, LV_SYMBOL_ENVELOPE " Dismiss"); lv_obj_center(dl);
+        lv_label_set_text_fmt(dl, LV_SYMBOL_ENVELOPE " %s", TR(I18N_DISMISS)); lv_obj_center(dl);
     }
 
     lv_obj_t * x = lv_btn_create(panel);
@@ -1610,7 +1610,7 @@ static void refresh_cb(lv_timer_t * t) {
         if (!relevant) update_minimized = 0;   /* reset once it's gone */
         /* Banner when relevant + not minimized; envelope when minimized. */
         if (relevant && !update_minimized) {
-            lv_label_set_text_fmt(update_banner_lbl, "%s available  -  tap for details",
+            lv_label_set_text_fmt(update_banner_lbl, TR(I18N_UPDATE_BANNER_FMT),
                                   g_update_state.latest_version);
             lv_obj_clear_flag(update_banner, LV_OBJ_FLAG_HIDDEN);
         } else {
@@ -1644,7 +1644,7 @@ static void refresh_cb(lv_timer_t * t) {
      * an install/result message is pinned. */
     if (about_status_lbl && !install_pinned) {
         if (g_update_state.available)
-            lv_label_set_text_fmt(about_status_lbl, "Update %s available",
+            lv_label_set_text_fmt(about_status_lbl, TR(I18N_UPDATE_X_AVAILABLE),
                                   g_update_state.latest_version);
         else if (g_update_state.last_check_epoch)
             lv_label_set_text(about_status_lbl, g_update_state.last_check_ok
@@ -2744,24 +2744,36 @@ static void on_news_tap(lv_event_t * e) {
     lv_obj_add_flag(news_modal, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(news_modal, news_modal_close, LV_EVENT_CLICKED, NULL);
 
+    /* Toon 1 (800x480): fill the whole screen so the headline list and the
+     * article fit with the least scrolling. Other targets keep the centred
+     * card. Columns are computed from the card size so both layouts share code. */
+#ifdef TOON1
+    int cw = LV_HOR_RES, ch = LV_VER_RES;
+#else
+    int cw = SX(900), ch = SY(500);
+#endif
     lv_obj_t * card = lv_obj_create(news_modal);
-    lv_obj_set_size(card, SX(900), SY(500));
+    lv_obj_set_size(card, cw, ch);
     lv_obj_center(card);
     lv_obj_set_style_bg_color(card, lv_color_hex(0x16243a), 0);
     lv_obj_set_style_radius(card, 16, 0);
     lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, 0, 0);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);   /* swallow taps */
+
+    int colw = cw / 2 - 18;     /* each column's width */
+    int rx   = cw / 2 + 4;      /* right column x */
 
     lv_obj_t * t = lv_label_create(card);
     lv_obj_set_style_text_font(t, SF(28), 0);
     lv_obj_set_style_text_color(t, lv_color_hex(0xffffff), 0);
-    lv_label_set_text(t, "Nieuws");
-    lv_obj_align(t, LV_ALIGN_TOP_LEFT, SX(16), SY(12));
+    lv_label_set_text(t, TR(I18N_TILE_NEWS));
+    lv_obj_align(t, LV_ALIGN_TOP_LEFT, 16, 12);
 
     news_list = lv_list_create(card);
-    lv_obj_set_size(news_list, SX(430), SY(432));
-    lv_obj_align(news_list, LV_ALIGN_TOP_LEFT, SX(12), SY(52));
+    lv_obj_set_size(news_list, colw, ch - 116);
+    lv_obj_align(news_list, LV_ALIGN_TOP_LEFT, 12, 52);
     lv_obj_set_style_bg_color(news_list, lv_color_hex(0x0e1a2a), 0);
     /* Start with every feed expanded; headers collapse/expand on tap. */
     for (int f = 0; f < NEWS_MAX_FEEDS; f++) news_collapsed[f] = false;
@@ -2772,12 +2784,12 @@ static void on_news_tap(lv_event_t * e) {
     lv_obj_set_style_text_font(news_body_title, SF(22), 0);
     lv_obj_set_style_text_color(news_body_title, lv_color_hex(0xffffff), 0);
     lv_label_set_long_mode(news_body_title, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(news_body_title, SX(420));
-    lv_obj_align(news_body_title, LV_ALIGN_TOP_LEFT, SX(458), SY(50));
+    lv_obj_set_width(news_body_title, colw);
+    lv_obj_align(news_body_title, LV_ALIGN_TOP_LEFT, rx, 50);
 
     lv_obj_t * pane = lv_obj_create(card);
-    lv_obj_set_size(pane, SX(432), SY(320));
-    lv_obj_align(pane, LV_ALIGN_TOP_LEFT, SX(452), SY(132));
+    lv_obj_set_size(pane, colw + 12, ch - 200);
+    lv_obj_align(pane, LV_ALIGN_TOP_LEFT, rx - 6, 132);
     lv_obj_set_style_bg_color(pane, lv_color_hex(0x0e1a2a), 0);
     lv_obj_set_style_border_width(pane, 0, 0);
     lv_obj_set_style_radius(pane, 10, 0);
@@ -2786,13 +2798,13 @@ static void on_news_tap(lv_event_t * e) {
     lv_obj_set_style_text_font(news_body_lbl, SF(18), 0);
     lv_obj_set_style_text_color(news_body_lbl, lv_color_hex(0xcdd9e6), 0);
     lv_label_set_long_mode(news_body_lbl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(news_body_lbl, SX(400));
+    lv_obj_set_width(news_body_lbl, colw - 24);
 
     news_show_body(0);
 
     lv_obj_t * x = lv_btn_create(card);
     lv_obj_set_size(x, SX(130), SY(48));
-    lv_obj_align(x, LV_ALIGN_BOTTOM_RIGHT, SX(-16), SY(-12));
+    lv_obj_align(x, LV_ALIGN_BOTTOM_RIGHT, -16, -12);
     lv_obj_add_event_cb(x, news_modal_close, LV_EVENT_CLICKED, NULL);
     lv_obj_t * xl = lv_label_create(x); lv_label_set_text(xl, TR(I18N_CLOSE)); lv_obj_center(xl);
 }
@@ -3687,7 +3699,7 @@ lv_obj_t * screen_home_create(void) {
      * the grid); content is filled in refresh_cb. */
     if (settings.custom_layout_enabled) {
         tile_t nt, ct;
-        make_tile(scr_root, 0, 0, 200, 150, LT_NEWS_SUMMARY, TR(I18N_TILE_NEWS), 0x6666aa, NULL, &nt);
+        make_tile(scr_root, 0, 0, 200, 150, LT_NEWS_SUMMARY, TR(I18N_TILE_NEWS), 0x6666aa, on_news_tap, &nt);
         tile_news_sum_lbl = lv_label_create(nt.tile);
         lv_obj_set_style_text_color(tile_news_sum_lbl, lv_color_hex(COL_TEXT_HI), 0);
         lv_obj_set_style_text_font(tile_news_sum_lbl, SF(14), 0);
@@ -4050,7 +4062,7 @@ lv_obj_t * screen_home_create(void) {
     update_banner_lbl = lv_label_create(update_banner);
     lv_obj_set_style_text_color(update_banner_lbl, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_text_font(update_banner_lbl, SF(18), 0);
-    lv_label_set_text(update_banner_lbl, "Update available");
+    lv_label_set_text(update_banner_lbl, TR(I18N_UPDATE_AVAILABLE));
     lv_obj_center(update_banner_lbl);
     lv_obj_add_flag(update_banner, LV_OBJ_FLAG_HIDDEN);
 
