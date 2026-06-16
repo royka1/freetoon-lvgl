@@ -27,12 +27,17 @@
 #include <errno.h>
 
 /* ---- URLs --------------------------------------------------------------- */
+/* Download from the toon-vpu RELEASE (latest/download/* always points at the
+ * newest non-prerelease) rather than a raw git path: github.com/raw/... 302-
+ * redirects to raw.githubusercontent.com, which busybox wget on the Toon often
+ * fails to follow — it left a 0-byte file that detection then read as
+ * "installed". Release asset URLs are a direct redirect curl handles. */
 #define VPU_DRV_URL \
-    "https://github.com/royka1/toon-vpu/raw/refs/heads/main/prebuilt/mxc_vpu.ko"
+    "https://github.com/royka1/toon-vpu/releases/latest/download/mxc_vpu.ko"
 #define VPU_FW_URL \
-    "https://github.com/royka1/toon-vpu/raw/refs/heads/main/prebuilt/firmware/vpu_fw_imx27_TO2.bin"
+    "https://github.com/royka1/toon-vpu/releases/latest/download/vpu_fw_imx27_TO2.bin"
 #define VPU_BIN_URL \
-    "https://github.com/royka1/toon-vpu/raw/refs/heads/main/prebuilt/vpu_stream"
+    "https://github.com/royka1/toon-vpu/releases/latest/download/vpu_stream"
 #define VPU_SCRIPTS_URL \
     "https://github.com/royka1/toon-vpu/tree/main/scripts"
 
@@ -83,6 +88,13 @@ static int file_exists(const char * path) {
     return (stat(path, &st) == 0 && S_ISREG(st.st_mode)) ? 1 : 0;
 }
 
+/* Like file_exists but also requires a minimum size, so a truncated / 0-byte
+ * download (the old wget-into-redirect failure) is NOT mistaken for installed. */
+static int file_min_size(const char * path, long min_bytes) {
+    struct stat st;
+    return (stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size >= min_bytes) ? 1 : 0;
+}
+
 static int dev_exists(const char * path) {
     struct stat st;
     return (stat(path, &st) == 0) ? 1 : 0;
@@ -98,15 +110,40 @@ static int sh(const char * cmd) {
     return rc;
 }
 
+/* Download url -> path with curl (follows the release redirect, fails on any
+ * HTTP error) and verify the result is at least min_bytes. A failed/redirected
+ * download otherwise leaves a 0-byte file that looks "installed"; on failure we
+ * delete it so detection correctly reports the component as missing. Returns 0
+ * on success. */
+static int vpu_fetch(const char * url, const char * path, long min_bytes) {
+    char cmd[1024];
+    snprintf(cmd, sizeof cmd,
+             "curl -fSL --connect-timeout 10 --max-time 300 -o '%s' '%s' 2>/dev/null",
+             path, url);
+    sh(cmd);
+    if (!file_min_size(path, min_bytes)) {
+        unlink(path);
+        fprintf(stderr, "[vpu] download too small/failed: %s\n", url);
+        return -1;
+    }
+    return 0;
+}
+
+/* Minimum plausible sizes (real assets are ~33 KB / 65 KB / 726 KB). */
+#define VPU_DRV_MIN  10000L
+#define VPU_FW_MIN   30000L
+#define VPU_BIN_MIN  100000L
+
 /* ---- Detection ---------------------------------------------------------- */
 
 static void detect_all(void) {
     struct utsname u;
     g_kernel_ok = (uname(&u) == 0 && strcmp(u.release, "2.6.36-R10-h28") == 0);
     g_drv_loaded = dev_exists(VPU_DEV_PATH);
-    g_drv_file   = file_exists(VPU_DRV_PATH);
-    g_fw_ok      = file_exists(VPU_FW_PATH);
-    g_bin_ok     = (access(VPU_BIN_PATH, X_OK) == 0);
+    /* Size-checked so a truncated/0-byte download isn't read as installed. */
+    g_drv_file   = file_min_size(VPU_DRV_PATH, VPU_DRV_MIN);
+    g_fw_ok      = file_min_size(VPU_FW_PATH, VPU_FW_MIN);
+    g_bin_ok     = (access(VPU_BIN_PATH, X_OK) == 0 && file_min_size(VPU_BIN_PATH, VPU_BIN_MIN));
 }
 
 static int all_ready(void) {
@@ -155,10 +192,7 @@ static void on_install_driver(lv_event_t * e) {
     lv_refr_now(NULL);
     remount_rw();
     sh("mkdir -p /lib/modules/2.6.36-R10-h28/kernel/drivers/mxc/vpu/");
-    char cmd[1024];
-    snprintf(cmd, sizeof cmd,
-             "wget -q -O '%s' '%s' 2>/dev/null", VPU_DRV_PATH, VPU_DRV_URL);
-    if (sh(cmd) != 0) {
+    if (vpu_fetch(VPU_DRV_URL, VPU_DRV_PATH, VPU_DRV_MIN) != 0) {
         set_lbl(g_lbl_driver, "Driver: download failed", 0xdd4444);
         return;
     }
@@ -177,10 +211,7 @@ static void on_install_firmware(lv_event_t * e) {
     lv_refr_now(NULL);
     remount_rw();
     sh("mkdir -p /lib/firmware/vpu/");
-    char cmd[1024];
-    snprintf(cmd, sizeof cmd,
-             "wget -q -O '%s' '%s' 2>/dev/null", VPU_FW_PATH, VPU_FW_URL);
-    if (sh(cmd) != 0) {
+    if (vpu_fetch(VPU_FW_URL, VPU_FW_PATH, VPU_FW_MIN) != 0) {
         set_lbl(g_lbl_fw, "Firmware: download failed", 0xdd4444);
         return;
     }
@@ -193,15 +224,92 @@ static void on_install_binary(lv_event_t * e) {
     lv_refr_now(NULL);
     remount_rw();
     sh("mkdir -p /root/vpu/");
-    char cmd[1024];
-    snprintf(cmd, sizeof cmd,
-             "wget -q -O '%s' '%s' 2>/dev/null && chmod +x '%s'",
-             VPU_BIN_PATH, VPU_BIN_URL, VPU_BIN_PATH);
-    if (sh(cmd) != 0) {
+    if (vpu_fetch(VPU_BIN_URL, VPU_BIN_PATH, VPU_BIN_MIN) != 0) {
         set_lbl(g_lbl_bin, "vpu_stream: download failed", 0xdd4444);
         return;
     }
+    sh("chmod +x '" VPU_BIN_PATH "'");
     refresh_status();
+}
+
+/* ---- Reinstall (force re-download of everything) ------------------------ */
+
+void open_vpu_modal(lv_event_t * e);   /* fwd: re-rendered after a reinstall */
+
+static void vpu_reopen_async(void * unused) {
+    (void)unused;
+    ui_pop();
+    open_vpu_modal(NULL);
+}
+
+/* Re-download driver + firmware + vpu_stream from the latest release even when
+ * they look installed (refresh a stale/corrupt copy or pull a newer build),
+ * reload the module, then rebuild the screen to show the new state. */
+static void on_reinstall_all(lv_event_t * e) {
+    (void)e;
+    remount_rw();
+    sh("mkdir -p /lib/modules/2.6.36-R10-h28/kernel/drivers/mxc/vpu/ "
+       "/lib/firmware/vpu/ /root/vpu/");
+    vpu_fetch(VPU_FW_URL, VPU_FW_PATH, VPU_FW_MIN);
+    if (vpu_fetch(VPU_BIN_URL, VPU_BIN_PATH, VPU_BIN_MIN) == 0)
+        sh("chmod +x '" VPU_BIN_PATH "'");
+    if (vpu_fetch(VPU_DRV_URL, VPU_DRV_PATH, VPU_DRV_MIN) == 0) {
+        sh("grep -q '^mxc_vpu ' /etc/modules 2>/dev/null || "
+           "echo '" VPU_MOD_OPTS "' >> /etc/modules");
+        sh("/sbin/depmod -a 2>/dev/null");
+        sh("/sbin/rmmod mxc_vpu 2>/dev/null");   /* drop the old module first */
+        sh("/sbin/insmod " VPU_DRV_PATH " 2>/dev/null");
+    }
+    lv_async_call(vpu_reopen_async, NULL);   /* defer: don't delete our own screen mid-event */
+}
+
+/* ---- Numeric keyboard for the option fields ----------------------------- */
+/* The option textareas (WxH, size, position/offset, ports, prebuffer) had no
+ * keyboard, so tapping them did nothing. Pop a keyboard on focus — NUMBER mode
+ * for the numeric fields, TEXT for the RTSP URL. */
+static lv_obj_t * g_vpu_kb = NULL;
+
+static void vpu_kb_event(lv_event_t * e) {
+    lv_event_code_t c = lv_event_get_code(e);
+    if ((c == LV_EVENT_READY || c == LV_EVENT_CANCEL) && g_vpu_kb)
+        lv_obj_add_flag(g_vpu_kb, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void vpu_ta_event(lv_event_t * e) {
+    lv_obj_t * ta = lv_event_get_target(e);
+    lv_event_code_t c = lv_event_get_code(e);
+    if (c == LV_EVENT_FOCUSED || c == LV_EVENT_CLICKED) {
+        if (!g_vpu_kb) {
+            g_vpu_kb = lv_keyboard_create(lv_layer_top());
+            lv_obj_set_size(g_vpu_kb, LV_HOR_RES, SY(240));
+            lv_obj_align(g_vpu_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+            lv_obj_add_event_cb(g_vpu_kb, vpu_kb_event, LV_EVENT_ALL, NULL);
+        }
+        lv_keyboard_set_mode(g_vpu_kb, (ta == g_ta_rtsp)
+                             ? LV_KEYBOARD_MODE_TEXT_LOWER : LV_KEYBOARD_MODE_NUMBER);
+        lv_keyboard_set_textarea(g_vpu_kb, ta);
+        lv_obj_clear_flag(g_vpu_kb, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(g_vpu_kb);
+    } else if (c == LV_EVENT_DEFOCUSED) {
+        if (g_vpu_kb && lv_keyboard_get_textarea(g_vpu_kb) == ta) {
+            lv_keyboard_set_textarea(g_vpu_kb, NULL);
+            lv_obj_add_flag(g_vpu_kb, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
+/* Attach the keyboard handler to every textarea under obj. */
+static void vpu_attach_kb(lv_obj_t * obj) {
+    if (lv_obj_check_type(obj, &lv_textarea_class))
+        lv_obj_add_event_cb(obj, vpu_ta_event, LV_EVENT_ALL, NULL);
+    uint32_t n = lv_obj_get_child_cnt(obj);
+    for (uint32_t i = 0; i < n; i++) vpu_attach_kb(lv_obj_get_child(obj, i));
+}
+
+/* Drop the layer-top keyboard when the VPU screen goes away. */
+static void vpu_scr_delete(lv_event_t * e) {
+    (void)e;
+    if (g_vpu_kb) { lv_obj_del(g_vpu_kb); g_vpu_kb = NULL; }
 }
 
 /* ---- Options save ------------------------------------------------------- */
@@ -456,6 +564,7 @@ void open_vpu_modal(lv_event_t * e) {
     lv_obj_set_scroll_dir(scr, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_height(scr, SY(2000));
+    lv_obj_add_event_cb(scr, vpu_scr_delete, LV_EVENT_DELETE, NULL);
 
     int y = 10;
     int ready = all_ready();
@@ -790,8 +899,16 @@ void open_vpu_modal(lv_event_t * e) {
         y += 30;
     }
 
+    /* Reinstall button — force a fresh download of all components from the
+     * latest release, available whether or not they currently look installed. */
+    if (g_kernel_ok) {
+        y += 6;
+        y = row_btn(scr, y, TR(I18N_VPU_REINSTALL), on_reinstall_all);
+    }
+
     y += 20;   /* bottom padding */
 
     lv_obj_set_height(scr, SY(y));
+    vpu_attach_kb(scr);   /* pop a keyboard when any option field is tapped */
     ui_push(scr);
 }

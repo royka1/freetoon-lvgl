@@ -134,6 +134,7 @@ enum i18n_key {
     I18N_VPU_RECOMMENDED,
     I18N_VPU_SHOW_URL,
     I18N_VPU_HIDE_URL,
+    I18N_VPU_REINSTALL,
 
     /* Language */
     I18N_LANGUAGE,

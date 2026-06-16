@@ -116,6 +116,7 @@ static const char * const en[I18N_COUNT] = {
     [I18N_VPU_RECOMMENDED]      = "(recommended)",
     [I18N_VPU_SHOW_URL]         = "http://toon-ip:8765/show",
     [I18N_VPU_HIDE_URL]         = "http://toon-ip:8765/hide",
+    [I18N_VPU_REINSTALL]        = "Reinstall VPU components",
 
     [I18N_LANGUAGE]             = "Language",
     [I18N_ENGLISH]              = "English",
@@ -328,6 +329,7 @@ static const char * const nl[I18N_COUNT] = {
     [I18N_VPU_RECOMMENDED]      = "(aanbevolen)",
     [I18N_VPU_SHOW_URL]         = "http://toon-ip:8765/show",
     [I18N_VPU_HIDE_URL]         = "http://toon-ip:8765/hide",
+    [I18N_VPU_REINSTALL]        = "VPU opnieuw installeren",
 
     [I18N_LANGUAGE]             = "Taal",
     [I18N_ENGLISH]              = "English",
