@@ -119,6 +119,17 @@ if dl fbvnc_input "$TMP/fbvnc_input"; then
     fi
 fi
 
+# 2b1) doorbell webhook daemon — the HTTP server on :8765 that turns
+# POST /show & /hide (Home Assistant / a doorbell) into toonui's live-video
+# tile. ui_launcher.sh starts it on boot and opens the firewall port. Without
+# this binary there is no webhook (it used to be a manual copy only).
+if dl doorbell_daemon "$TMP/doorbell_daemon"; then
+    if [ "$(wc -c < "$TMP/doorbell_daemon" 2>/dev/null || echo 0)" -gt 5000 ]; then
+        cp "$TMP/doorbell_daemon" "$DEST/doorbell_daemon" && chmod +x "$DEST/doorbell_daemon"
+        say "installed doorbell webhook daemon -> $DEST/doorbell_daemon"
+    fi
+fi
+
 # 2b2) wastefetch — embeds QuickJS to run the ToonSoftwareCollective waste
 # provider scripts (full stock-app afvalkalender mimic, all providers). Arch-
 # matched like the main binary: nxt → wastefetch, qb2 → wastefetch-toon1.
