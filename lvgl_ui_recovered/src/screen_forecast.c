@@ -28,6 +28,9 @@ static lv_obj_t * fc_icon[WEATHER_FORECAST_DAYS];
 static lv_obj_t * fc_wind_lbl[WEATHER_FORECAST_DAYS];
 static lv_obj_t * fc_wind_arrow[WEATHER_FORECAST_DAYS];
 static lv_obj_t * radar_img = NULL;
+static lv_obj_t * nowcast_chart = NULL;
+static lv_chart_series_t * nowcast_ser = NULL;
+static lv_obj_t * lbl_nowcast = NULL;
 static lv_timer_t * refresh_timer = NULL;
 
 /* Radar zoom — LVGL convention: 256 = 100 %. Source GIF is 550x512, frame
@@ -56,6 +59,37 @@ static void wx_set_tile_icon(lv_obj_t * img, const char * code) {
     weather_set_tile_icon(img, code, DISP_VER < 600 ? 48 : 64);
 }
 
+/* Precipitation nowcast: fill the bar graph from weather_state.rain[] and write
+ * a short "when will it rain / stop" line. A slot is "rain" at value >= 50
+ * (below that is noise/very light drizzle). */
+#define RAIN_THR 50
+static void update_nowcast(void) {
+    if (!nowcast_chart || !nowcast_ser) return;
+    int n = weather_state.rain_count;
+    for (int i = 0; i < WEATHER_RAIN_SLOTS; i++)
+        lv_chart_set_value_by_id(nowcast_chart, nowcast_ser, i,
+                                 (i < n) ? weather_state.rain[i].value : 0);
+    lv_chart_refresh(nowcast_chart);
+
+    if (!lbl_nowcast) return;
+    if (n <= 0) { lv_label_set_text(lbl_nowcast, "Neerslag: geen data"); return; }
+    int start = -1, stop = -1;
+    for (int i = 0; i < n; i++)
+        if (weather_state.rain[i].value >= RAIN_THR) { start = i; break; }
+    char msg[64];
+    if (start < 0) {
+        snprintf(msg, sizeof msg, "Droog de komende 2 uur");
+    } else if (weather_state.rain[0].value >= RAIN_THR) {
+        for (int i = 1; i < n; i++)
+            if (weather_state.rain[i].value < RAIN_THR) { stop = i; break; }
+        if (stop >= 0) snprintf(msg, sizeof msg, "Regen tot %s", weather_state.rain[stop].time);
+        else           snprintf(msg, sizeof msg, "Regen de komende 2 uur");
+    } else {
+        snprintf(msg, sizeof msg, "Regen vanaf %s", weather_state.rain[start].time);
+    }
+    lv_label_set_text(lbl_nowcast, msg);
+}
+
 static void refresh_cb(lv_timer_t * t) {
     (void)t;
 
@@ -78,6 +112,8 @@ static void refresh_cb(lv_timer_t * t) {
 
     lv_label_set_text(lbl_title, weather_state.weatherreport_title);
     lv_label_set_text(lbl_body,  weather_state.weatherreport_text);
+
+    update_nowcast();
 
     int show_hourly = settings.forecast_mode != FORECAST_DAILY
                       && weather_state.hour_count > 0;
@@ -239,6 +275,29 @@ lv_obj_t * screen_forecast_create(void) {
     lv_obj_set_width(lbl_body, SX(540));
     lv_label_set_long_mode(lbl_body, LV_LABEL_LONG_WRAP);
     lv_label_set_text(lbl_body, "(laden...)");
+
+    /* Rain nowcast (Buienradar precipitation, next ~2 h): a "when will it rain /
+     * stop" line plus a compact bar graph, in the gap under the report. */
+    int nc_y = (DISP_VER < 600) ? 314 : 502;
+    lbl_nowcast = lv_label_create(scr_root);
+    lv_obj_set_style_text_font(lbl_nowcast, SF(18), 0);
+    lv_obj_set_style_text_color(lbl_nowcast, lv_color_hex(0x9fd0ff), 0);
+    lv_obj_set_pos(lbl_nowcast, SX(440), nc_y);
+    lv_label_set_text(lbl_nowcast, "");
+
+    nowcast_chart = lv_chart_create(scr_root);
+    lv_obj_set_size(nowcast_chart, SX(540), (DISP_VER < 600) ? 46 : 64);
+    lv_obj_set_pos(nowcast_chart, SX(440), nc_y + 24);
+    lv_chart_set_type(nowcast_chart, LV_CHART_TYPE_BAR);
+    lv_chart_set_point_count(nowcast_chart, WEATHER_RAIN_SLOTS);
+    lv_chart_set_range(nowcast_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 140);
+    lv_chart_set_div_line_count(nowcast_chart, 0, 0);
+    lv_obj_set_style_bg_color(nowcast_chart, lv_color_hex(0x0e1a2a), 0);
+    lv_obj_set_style_border_width(nowcast_chart, 0, 0);
+    lv_obj_set_style_radius(nowcast_chart, 6, 0);
+    lv_obj_set_style_pad_all(nowcast_chart, 2, 0);
+    nowcast_ser = lv_chart_add_series(nowcast_chart, lv_color_hex(0x4aa3ff),
+                                      LV_CHART_AXIS_PRIMARY_Y);
 
     /* 5-day forecast strip — same column anatomy as the home band: day
        label top-left, max°(min°) top-right, big icon centred, wind arrow

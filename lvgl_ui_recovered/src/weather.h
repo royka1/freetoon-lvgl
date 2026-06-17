@@ -5,6 +5,13 @@
 /* 6 so the home/dim strips can render 5 future slots after skipping
  * slot 0 (which feeds the "Medemblik - 14.7 C now" header above). */
 #define WEATHER_FORECAST_HOURS 6    /* number of 3-hour slots we surface */
+#define WEATHER_RAIN_SLOTS     30   /* Buienradar rain nowcast: 5-min steps, ~2 h */
+
+/* One 5-minute slot of the Buienradar precipitation nowcast. */
+typedef struct {
+    char time[6];   /* "HH:MM" local */
+    int  value;     /* 0-255 Buienradar scale; mm/h = 10^((value-109)/32), 0 = dry */
+} rain_slot_t;
 
 /* One day in the 5-day forecast — fields parsed from buienradar JSON's
    `forecast.fivedayforecast[]`. */
@@ -42,6 +49,9 @@ typedef struct {
     int             day_count;
     weather_hour_t  hours[WEATHER_FORECAST_HOURS];
     int             hour_count;       /* 0 → use daily band, >0 → use hourly */
+    float           lat, lon;         /* resolved location, for the rain nowcast */
+    rain_slot_t     rain[WEATHER_RAIN_SLOTS];
+    int             rain_count;       /* nowcast slots parsed (0 = none) */
 } weather_state_t;
 
 extern weather_state_t weather_state;

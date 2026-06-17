@@ -492,6 +492,9 @@ static int fetch_buienradar_hourly(void) {
             weather_state.hour_count = 0;
             return -1;
         }
+        /* Keep the coordinates for the precipitation nowcast (raintext API). */
+        weather_state.lat = (float)lat;
+        weather_state.lon = (float)lon;
     }
     /* Parse everything we can from this one response.  Order matters:
      * hourly first (it advances through "hours" arrays), then daily
@@ -517,6 +520,42 @@ static int fetch_radar_image(void) {
         weather_state.radar_url);
     int rc = system(cmd);
     return (rc == 0) ? 0 : -1;
+}
+
+/* Buienradar precipitation nowcast: rain intensity per 5 min for the next ~2 h
+ * at the location's lat/lon. The endpoint returns plain text lines "NNN|HH:MM"
+ * (NNN = 0-255 intensity, 0 = dry). Lets the forecast screen show WHEN it will
+ * start/stop raining. */
+static int fetch_rain_nowcast(void) {
+    if (weather_state.lat == 0.0f && weather_state.lon == 0.0f) return -1;
+    char url[160];
+    snprintf(url, sizeof url,
+             "https://gpsgadget.buienradar.nl/data/raintext?lat=%.2f&lon=%.2f",
+             weather_state.lat, weather_state.lon);
+    static char body[4096];
+    if (http_fetch(url, body, sizeof body) != 0) return -1;
+
+    int n = 0;
+    const char * p = body;
+    while (n < WEATHER_RAIN_SLOTS && *p) {
+        const char * bar = strchr(p, '|');
+        const char * nl  = strchr(p, '\n');
+        if (!bar || (nl && bar > nl)) { if (!nl) break; p = nl + 1; continue; }
+        int val = atoi(p);
+        if (val < 0) val = 0; else if (val > 255) val = 255;
+        char t[6] = {0};
+        for (int i = 0; i < 5 && bar[1 + i] && bar[1 + i] != '\n' && bar[1 + i] != '\r'; i++)
+            t[i] = bar[1 + i];
+        if (t[0]) {
+            weather_state.rain[n].value = val;
+            snprintf(weather_state.rain[n].time, sizeof weather_state.rain[n].time, "%s", t);
+            n++;
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    weather_state.rain_count = n;
+    return n > 0 ? 0 : -1;
 }
 
 /* Resolve a city name to a Buienradar/GeoNames location id via the free
@@ -596,6 +635,11 @@ static void * wx_thread(void * arg) {
 
         /* Refresh the radar GIF a few times (5-min cadence) whenever we have a
          * URL, then loop back to re-poll the JSON. */
+        /* Precipitation nowcast (when will it rain/stop) — refreshed with the
+         * radar on the 5-min cadence below. */
+        if (fetch_rain_nowcast() == 0)
+            fprintf(stderr, "[wx] rain nowcast: %d slots\n", weather_state.rain_count);
+
         if (weather_state.radar_url[0]) {
             for (int i = 0; i < 3; i++) {
                 if (fetch_radar_image() == 0)
@@ -603,6 +647,7 @@ static void * wx_thread(void * arg) {
                 else
                     fprintf(stderr, "[wx] radar fetch failed\n");
                 sleep(5 * 60);
+                fetch_rain_nowcast();   /* keep the nowcast fresh between JSON polls */
             }
         } else {
             sleep(60);
