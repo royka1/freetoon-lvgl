@@ -23,14 +23,26 @@
 #include <pthread.h>
 #include <time.h>
 #include <ctype.h>
+#include <strings.h>   /* strncasecmp for the case-insensitive key match */
 
 weather_state_t weather_state = {0};
+
+/* Case-insensitive strstr. Buienradar has flip-flopped its JSON key casing —
+ * lowercase, then PascalCase (mid-2026), then reverted to lowercase again — so
+ * match keys regardless of case to survive whichever style is live. */
+static const char * ci_strstr(const char * hay, const char * needle) {
+    size_t nl = strlen(needle);
+    if (!nl) return hay;
+    for (; *hay; hay++)
+        if (strncasecmp(hay, needle, nl) == 0) return hay;
+    return NULL;
+}
 
 /* Scan a substring of json for "key":<number>; returns parsed double, dflt if missing. */
 static double js_num(const char * begin, const char * end, const char * key, double dflt) {
     char n[64];
     snprintf(n, sizeof(n), "\"%s\":", key);
-    const char * p = strstr(begin, n);
+    const char * p = ci_strstr(begin, n);
     if (!p || p >= end) return dflt;
     p += strlen(n);
     while (*p == ' ' || *p == '\t') p++;
@@ -56,7 +68,7 @@ static int js_str(const char * begin, const char * end, const char * key,
                   char * out, size_t outsz) {
     char n[64];
     snprintf(n, sizeof(n), "\"%s\":\"", key);
-    const char * p = strstr(begin, n);
+    const char * p = ci_strstr(begin, n);
     if (!p || p >= end) { if (outsz) out[0] = 0; return 0; }
     p += strlen(n);
     size_t o = 0;
@@ -162,16 +174,23 @@ static int parse_buienradar(const char * body) {
     const char * end = body + strlen(body);
     int got = 0;
 
-    /* Radar image URL — js_str unescapes the & ('&') in the query. */
+    /* Radar image URL. The key is matched case-insensitively (it has been
+     * "ActualRadarUrl" and "actualradarurl" at different times). The PascalCase
+     * feed HTML-escaped the query '&' as "&amp;"; the lowercase one uses a plain
+     * '&'. Normalise "&amp;" -> "&" so the URL is valid either way. */
     if (js_str(body, end, "ActualRadarUrl",
                weather_state.radar_url, sizeof(weather_state.radar_url)) &&
-        weather_state.radar_url[0])
+        weather_state.radar_url[0]) {
+        char * amp;
+        while ((amp = strstr(weather_state.radar_url, "&amp;")) != NULL)
+            memmove(amp + 1, amp + 5, strlen(amp + 5) + 1);
         got = 1;
+    }
 
     /* Weather report: Forecast.WeatherReport { Title, Summary, Text }. */
-    const char * wr = strstr(body, "\"WeatherReport\":");
+    const char * wr = ci_strstr(body, "\"weatherreport\":");
     if (wr) {
-        const char * wr_end = strstr(wr, "\"ShortTermForecast\"");
+        const char * wr_end = ci_strstr(wr, "\"shorttermforecast\"");
         if (!wr_end || wr_end > end) {
             wr_end = (wr + 4096 < end) ? wr + 4096 : end;
         }
