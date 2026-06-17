@@ -177,22 +177,31 @@ VNCLOG=/var/volatile/tmp/x11vnc.log
 # rewrite /etc/default/iptables.conf. `|| true` so a firewall hiccup never
 # aborts the launcher under `set -e` and leaves the device UI-less.
 if [ -x /usr/sbin/iptables ]; then
-    for p in 10081 5900 8765; do
+    fw_ports="10081 5900 8765"
+    # The doorbell video stream arrives on TCP :5000 only in the default
+    # (TCP "warm") mode — i.e. when no RTP port is configured (video_rtp=0 or
+    # unset in toonui.cfg). With an RTP port set, vpu_stream listens on that
+    # UDP port instead (opened by toon1_video_prep), so :5000 isn't needed.
+    vrtp=$(cfg_get video_rtp)
+    if [ -z "${vrtp:-}" ] || [ "${vrtp:-0}" = "0" ]; then
+        fw_ports="$fw_ports 5000"
+    fi
+    for p in $fw_ports; do
         /usr/sbin/iptables -C HCB-INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null \
             || /usr/sbin/iptables -I HCB-INPUT 1 -p tcp --dport "$p" -j ACCEPT 2>/dev/null \
             || true
     done
-    log "ensured firewall open for PWA 10081 + VNC 5900 + doorbell 8765"
+    log "ensured firewall open for TCP: $fw_ports"
 fi
 
 # Doorbell webhook daemon: a tiny HTTP server on :8765 that turns POST /show
 # and /hide (from Home Assistant or a doorbell) into toonui's live-video tile
 # show/hide over /tmp/toonui.cmd. It's a standalone binary, so start it here
-# (backgrounded; survives the exec below) when installed. Kill any stale copy
-# from a previous launcher run first so we never stack instances on the port.
+# (backgrounded; survives the exec below) when installed — but ONLY if nothing
+# is already running it. Some Toons supervise it from an inittab `respawn` row;
+# starting a second copy would fight over the port, so we skip when it's up.
 DOORBELL=/mnt/data/doorbell_daemon
-if [ -x "$DOORBELL" ]; then
-    kill $(pidof doorbell_daemon) 2>/dev/null || true
+if [ -x "$DOORBELL" ] && ! pidof doorbell_daemon >/dev/null 2>&1; then
     "$DOORBELL" 8765 >/var/volatile/tmp/doorbell.log 2>&1 &
     log "started doorbell webhook daemon on :8765"
 fi
