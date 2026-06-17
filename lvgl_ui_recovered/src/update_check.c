@@ -147,72 +147,137 @@ static int ver_cmp(const char * a, const char * b) {
     return ac - bc;
 }
 
+/* The github.com releases atom feed — same host the rest of GitHub downloads
+ * use, NOT the rate-limited api.github.com, so it's reachable when the API
+ * isn't. Lists every release (incl. prereleases), newest first. */
+#define RELEASES_ATOM "https://github.com/royka1/freetoon-lvgl/releases.atom"
+
+/* Pick the highest-semver release tag from the atom feed, plus a best-effort
+ * plain-text copy of its notes (the entry's <content>, HTML stripped/decoded).
+ * Returns 1 if a tag was found. */
+static int atom_pick_latest(const char * body, char * tag, size_t tagsz,
+                            char * notes, size_t notessz) {
+    tag[0] = 0;
+    if (notessz) notes[0] = 0;
+    const char * pos = body;
+    const char * m;
+    const char * best_at = NULL;
+    char cur[UPDATE_VERSION_MAX];
+    while ((m = strstr(pos, "releases/tag/")) != NULL) {
+        const char * s = m + 13;                 /* strlen("releases/tag/") */
+        size_t i = 0;
+        while (s[i] && s[i] != '"' && s[i] != '<' && s[i] != '/' && i < sizeof cur - 1) {
+            cur[i] = s[i]; i++;
+        }
+        cur[i] = 0;
+        if (cur[0] && (!tag[0] || ver_cmp(cur, tag) > 0)) {
+            snprintf(tag, tagsz, "%s", cur);
+            best_at = m;
+        }
+        pos = m + 13;
+    }
+    if (!tag[0]) return 0;
+
+    if (best_at && notessz) {
+        const char * c = strstr(best_at, "<content");
+        if (c) c = strchr(c, '>');
+        const char * cend = c ? strstr(c, "</content>") : NULL;
+        if (c && cend) {
+            c++;
+            size_t o = 0;
+            int intag = 0;
+            while (c < cend && o + 1 < notessz) {
+                if (*c == '<') { intag = 1; c++; continue; }
+                if (*c == '>') { intag = 0; c++; continue; }
+                if (intag)     { c++; continue; }
+                if (*c == '&') {
+                    if      (!strncmp(c, "&lt;",  4)) { notes[o++] = '<';  c += 4; continue; }
+                    else if (!strncmp(c, "&gt;",  4)) { notes[o++] = '>';  c += 4; continue; }
+                    else if (!strncmp(c, "&amp;", 5)) { notes[o++] = '&';  c += 5; continue; }
+                    else if (!strncmp(c, "&quot;",6)) { notes[o++] = '"';  c += 6; continue; }
+                    else if (!strncmp(c, "&#39;", 5)) { notes[o++] = '\''; c += 5; continue; }
+                    else if (!strncmp(c, "&#34;", 5)) { notes[o++] = '"';  c += 5; continue; }
+                    else if (!strncmp(c, "&nbsp;",6)) { notes[o++] = ' ';  c += 6; continue; }
+                }
+                notes[o++] = *c++;
+            }
+            notes[o] = 0;
+        }
+    }
+    return 1;
+}
+
 void update_check_now(void) {
     if (!settings.update_check_enabled) return;
     /* GitHub's /releases/latest payload runs ~8-12 KB once asset metadata
      * is in there; bump the buffer to 32 KB so curl doesn't EPIPE when we
      * close the read pipe before it's finished writing. */
     static char body[32768];
-    body[0] = 0;
-    const char * api = settings.update_channel == 0
-                       ? RELEASES_API_STABLE : RELEASES_API_BETA;
-    int rc = http_fetch(api, body, sizeof body);
-    g_update_state.last_check_epoch = (long)time(NULL);
-    /* http_fetch returns 0 on success (not byte count). Treat anything
-     * non-zero as failure. body[] is also empty after a failure since
-     * we cleared it pre-call. */
-    if (rc != 0 || body[0] == 0) {
-        /* The api.github.com fetch failed — but that is NOT proof the Toon is
-         * offline. The GitHub *API* host is the flaky one: unauthenticated
-         * requests are rate-limited (60/hr → 403/empty), a Pi-Hole/proxy can
-         * single it out, and the larger /releases payload can run past the
-         * fetch timeout on a slow link. Meanwhile buienradar/news/waste/
-         * domoticz all fetch fine. So only report "check internet" when a real
-         * connectivity probe ALSO fails; otherwise treat it as "couldn't reach
-         * the update server right now" without the false offline banner. */
-        g_update_state.last_check_ok = internet_reachable();
-        fprintf(stderr, "[update] github fetch failed (rc=%d), internet=%d\n",
-                rc, g_update_state.last_check_ok);
-        return;
-    }
-    g_update_state.last_check_ok = 1;
-
     char tag[UPDATE_VERSION_MAX] = {0};
     char url[UPDATE_URL_MAX]     = {0};
     char notes[UPDATE_NOTES_MAX] = {0};
+    int got = 0;
 
-    if (settings.update_channel == 0) {
-        /* /releases/latest → a single release object. */
-        json_extract_str(body, "tag_name", tag,   sizeof tag);
-        json_extract_str(body, "html_url", url,   sizeof url);
-        json_extract_str(body, "body",     notes, sizeof notes);
-    } else {
-        /* Beta channel: body is an array of releases. Walk every "tag_name"
-         * and keep the highest semver — don't trust GitHub's date order. */
-        const char * best_at = NULL;
-        const char * pos = body;
-        char cur[UPDATE_VERSION_MAX];
-        const char * t;
-        while ((t = strstr(pos, "\"tag_name\"")) != NULL) {
-            if (json_extract_str(t, "tag_name", cur, sizeof cur) && cur[0] &&
-                (!tag[0] || ver_cmp(cur, tag) > 0)) {
-                snprintf(tag, sizeof tag, "%s", cur);
-                best_at = t;
-            }
-            pos = t + 10;
-        }
-        if (tag[0]) {
-            /* html_url is deterministic — build it instead of parsing the
-             * matching release object out of the array (brittle with nested
-             * author/assets objects). */
+    g_update_state.last_check_epoch = (long)time(NULL);
+
+    /* Beta channel: try the github.com atom feed FIRST. It's not the
+     * rate-limited api.github.com host, so it resolves on Toons the API
+     * rejects (the recurring "no newer version found" cause). */
+    if (settings.update_channel != 0) {
+        body[0] = 0;
+        if (http_fetch(RELEASES_ATOM, body, sizeof body) == 0 && body[0] &&
+            atom_pick_latest(body, tag, sizeof tag, notes, sizeof notes)) {
             snprintf(url, sizeof url,
                 "https://github.com/royka1/freetoon-lvgl/releases/tag/%s", tag);
-            /* notes = the "body" field that follows this release's tag_name. */
-            if (best_at) json_extract_str(best_at, "body", notes, sizeof notes);
+            got = 1;
         }
     }
 
-    if (is_newer_than_build(tag)) {
+    /* Fallback (and the stable channel): the GitHub API. */
+    if (!got) {
+        body[0] = 0;
+        const char * api = settings.update_channel == 0
+                           ? RELEASES_API_STABLE : RELEASES_API_BETA;
+        int rc = http_fetch(api, body, sizeof body);
+        /* http_fetch returns 0 on success. A failure here is NOT proof the Toon
+         * is offline — the GitHub API host is the flaky one (60/hr rate-limit,
+         * proxy quirks, slow payload). Only show "check internet" when a real
+         * connectivity probe ALSO fails. */
+        if (rc != 0 || body[0] == 0) {
+            g_update_state.last_check_ok = internet_reachable();
+            fprintf(stderr, "[update] github fetch failed (rc=%d), internet=%d\n",
+                    rc, g_update_state.last_check_ok);
+            return;
+        }
+        if (settings.update_channel == 0) {
+            json_extract_str(body, "tag_name", tag,   sizeof tag);
+            json_extract_str(body, "html_url", url,   sizeof url);
+            json_extract_str(body, "body",     notes, sizeof notes);
+        } else {
+            const char * best_at = NULL;
+            const char * pos = body;
+            char cur[UPDATE_VERSION_MAX];
+            const char * t;
+            while ((t = strstr(pos, "\"tag_name\"")) != NULL) {
+                if (json_extract_str(t, "tag_name", cur, sizeof cur) && cur[0] &&
+                    (!tag[0] || ver_cmp(cur, tag) > 0)) {
+                    snprintf(tag, sizeof tag, "%s", cur);
+                    best_at = t;
+                }
+                pos = t + 10;
+            }
+            if (tag[0]) {
+                snprintf(url, sizeof url,
+                    "https://github.com/royka1/freetoon-lvgl/releases/tag/%s", tag);
+                if (best_at) json_extract_str(best_at, "body", notes, sizeof notes);
+            }
+        }
+        got = (tag[0] != 0);
+    }
+
+    g_update_state.last_check_ok = 1;
+
+    if (got && is_newer_than_build(tag)) {
         snprintf(g_update_state.latest_version,
                  sizeof g_update_state.latest_version, "%s", tag);
         snprintf(g_update_state.release_url,

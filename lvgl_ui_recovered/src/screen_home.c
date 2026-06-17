@@ -828,7 +828,7 @@ static void open_about_modal(lv_event_t * e) {
     lv_obj_add_event_cb(update_modal, on_update_modal_close, LV_EVENT_CLICKED, NULL);
 
     lv_obj_t * panel = lv_obj_create(update_modal);
-    lv_obj_set_size(panel, SX(760), SY(470));
+    lv_obj_set_size(panel, SX(960), SY(560));   /* near-fullscreen so notes + toggles + buttons all fit */
     lv_obj_center(panel);
     lv_obj_set_style_bg_color(panel, lv_color_hex(0x16243a), 0);
     lv_obj_set_style_border_width(panel, 0, 0);
@@ -874,13 +874,13 @@ static void open_about_modal(lv_event_t * e) {
     about_status_lbl = lv_label_create(panel);
     lv_obj_set_style_text_font(about_status_lbl, SF(22), 0);
     lv_obj_set_style_text_color(about_status_lbl, lv_color_hex(0xffffff), 0);
-    lv_obj_set_width(about_status_lbl, SX(716));
+    lv_obj_set_width(about_status_lbl, SX(912));
     lv_label_set_long_mode(about_status_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_align(about_status_lbl, LV_ALIGN_TOP_LEFT, 0, SY(70));
 
     /* Release notes (scrollable area). */
     lv_obj_t * notesbox = lv_obj_create(panel);
-    lv_obj_set_size(notesbox, SX(716), SY(230));
+    lv_obj_set_size(notesbox, SX(912), SY(330));
     lv_obj_align(notesbox, LV_ALIGN_TOP_LEFT, 0, SY(110));
     lv_obj_set_style_bg_color(notesbox, lv_color_hex(0x0e1a2a), 0);
     lv_obj_set_style_border_width(notesbox, 0, 0);
@@ -892,7 +892,7 @@ static void open_about_modal(lv_event_t * e) {
     lv_obj_set_style_text_font(notes, SF(18), 0);
     lv_obj_set_style_text_color(notes, lv_color_hex(0xc8d4e0), 0);
     lv_label_set_long_mode(notes, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(notes, SX(690));
+    lv_obj_set_width(notes, SX(882));
     lv_label_set_text(notes, g_update_state.release_notes[0]
         ? g_update_state.release_notes
         : "freetoon - an independent LVGL UI for the Eneco Toon, by Ierlandfan.\n"
@@ -916,9 +916,9 @@ static void open_about_modal(lv_event_t * e) {
     lv_obj_set_style_text_font(au_lbl, SF(18), 0);
     lv_obj_set_style_text_color(au_lbl, lv_color_hex(0xc8d4e0), 0);
     lv_label_set_text_fmt(au_lbl, TR(I18N_AUTO_UPDATE_FMT), settings.auto_update_hour);
-    lv_obj_align(au_lbl, LV_ALIGN_TOP_LEFT, 0, SY(350));
+    lv_obj_align(au_lbl, LV_ALIGN_TOP_LEFT, 0, SY(458));
     lv_obj_t * au_sw = lv_switch_create(panel);
-    lv_obj_align(au_sw, LV_ALIGN_TOP_LEFT, SX(320), SY(344));
+    lv_obj_align(au_sw, LV_ALIGN_TOP_LEFT, SX(320), SY(452));
     if (settings.auto_update_enabled) lv_obj_add_state(au_sw, LV_STATE_CHECKED);
     lv_obj_add_event_cb(au_sw, on_auto_update_toggle, LV_EVENT_VALUE_CHANGED, NULL);
 
@@ -927,9 +927,9 @@ static void open_about_modal(lv_event_t * e) {
     lv_obj_set_style_text_font(ch_lbl, SF(18), 0);
     lv_obj_set_style_text_color(ch_lbl, lv_color_hex(0xc8d4e0), 0);
     lv_label_set_text(ch_lbl, TR(I18N_BETA_DEV));
-    lv_obj_align(ch_lbl, LV_ALIGN_TOP_LEFT, SX(430), SY(350));
+    lv_obj_align(ch_lbl, LV_ALIGN_TOP_LEFT, SX(430), SY(458));
     lv_obj_t * ch_sw = lv_switch_create(panel);
-    lv_obj_align(ch_sw, LV_ALIGN_TOP_LEFT, SX(600), SY(344));
+    lv_obj_align(ch_sw, LV_ALIGN_TOP_LEFT, SX(600), SY(452));
     if (settings.update_channel) lv_obj_add_state(ch_sw, LV_STATE_CHECKED);
     lv_obj_add_event_cb(ch_sw, on_channel_toggle, LV_EVENT_VALUE_CHANGED, NULL);
 
