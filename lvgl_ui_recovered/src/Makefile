@@ -191,10 +191,13 @@ $(BUILDDIR)/doorbell_daemon: doorbell_daemon.c $(GLIBC_SRC)
 QJS_OBJ := $(addprefix $(BUILDDIR)/quickjs/,quickjs.o cutils.o libregexp.o libunicode.o libbf.o)
 $(BUILDDIR)/quickjs/%.o: quickjs/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(SYSROOTFLAG) $(ARCHFLAGS) -O2 -w -DCONFIG_VERSION='"2024-01-13"' -D_GNU_SOURCE -Iquickjs -c $< -o $@
-$(BUILDDIR)/wastefetch: wastefetch.c $(QJS_OBJ)
+	$(CC) $(SYSROOTFLAG) $(ARCHFLAGS) $(TARGET_DEF) $(GLIBC_CFLAGS) -O2 -w -DCONFIG_VERSION='"2024-01-13"' -D_GNU_SOURCE -Iquickjs -c $< -o $@
+# Toon 1: same glibc-2.21 compat shim as toonui, and libatomic linked
+# statically -- the device has no libatomic.so.1.
+$(BUILDDIR)/wastefetch: wastefetch.c $(QJS_OBJ) $(GLIBC_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $(SYSROOTFLAG) $(ARCHFLAGS) -O2 -Iquickjs -o $@ wastefetch.c $(QJS_OBJ) -lm -lpthread -latomic
+	$(CC) $(SYSROOTFLAG) $(ARCHFLAGS) $(TARGET_DEF) $(GLIBC_CFLAGS) -O2 -Iquickjs -o $@ wastefetch.c $(QJS_OBJ) $(GLIBC_SRC) \
+	      -lm -lpthread -Wl,-Bstatic -latomic -Wl,-Bdynamic $(GLIBC_LDFLAGS)
 	@$(WF_POST)
 
 # Pull in header-dep files (.d) emitted by -MMD so changes to .h trigger rebuild.

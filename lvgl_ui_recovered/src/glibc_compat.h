@@ -45,6 +45,14 @@ __asm__(".symver __isoc23_sscanf,__isoc99_sscanf@GLIBC_2.7");
 __asm__(".symver __isoc23_strtol,strtol@GLIBC_2.4");
 __asm__(".symver fcntl,fcntl@GLIBC_2.4");
 __asm__(".symver fmod,fmod@GLIBC_2.4");
+/* libm functions re-versioned at 2.29/2.35 (new error handling / faster
+ * implementations) that QuickJS (wastefetch) pulls in; the 2.4 versions
+ * have the same ABI. */
+__asm__(".symver exp,exp@GLIBC_2.4");
+__asm__(".symver log,log@GLIBC_2.4");
+__asm__(".symver log2,log2@GLIBC_2.4");
+__asm__(".symver pow,pow@GLIBC_2.4");
+__asm__(".symver hypot,hypot@GLIBC_2.4");
 /* stat/fstat/lstat: no @GLIBC_2.4 alias in modern libc — these moved from
  * being thin wrappers around __xstat/__fxstat/__lxstat into directly-versioned
  * symbols at @GLIBC_2.33. Toon's glibc 2.21 only has the __xstat family.
