@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 #define CFG_PATH "/mnt/data/toonui.cfg"
 
@@ -547,6 +548,25 @@ static int json_esc(char * out, size_t outsz, const char * in) {
 }
 #endif
 
+int file_commit(FILE * f, const char * tmp, const char * path) {
+    int bad = (fflush(f) != 0) || ferror(f);
+    if (!bad && fsync(fileno(f)) != 0) bad = 1;
+    if (fclose(f) != 0) bad = 1;
+    if (bad || rename(tmp, path) != 0) {
+        fprintf(stderr, "[save] writing %s failed — kept the previous file\n", path);
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
+void file_set_aside(const char * path) {
+    char bad[300];
+    snprintf(bad, sizeof bad, "%s.bad", path);
+    if (rename(path, bad) == 0)
+        fprintf(stderr, "[load] %s is damaged — moved to %s\n", path, bad);
+}
+
 void settings_save(void) {
     sanitize_all_strings();
 #ifdef WASM_BUILD
@@ -582,7 +602,10 @@ void settings_save(void) {
     wasm_post_settings_blob(json);
     return;     /* don't try to fopen(CFG_PATH, "w") — no /mnt/data in WASM */
 #endif
-    FILE * f = fopen(CFG_PATH, "w");
+    /* Written to a temp file and renamed into place: this runs every 5 min
+     * (energy daily totals), so an in-place rewrite interrupted by a reboot,
+     * watchdog reset or power cut would leave an empty toonui.cfg. */
+    FILE * f = fopen(CFG_PATH ".tmp", "w");
     if (!f) return;
     fprintf(f, "auto_dim_enabled=%d\n",  settings.auto_dim_enabled);
     fprintf(f, "auto_dim_seconds=%d\n",  settings.auto_dim_seconds);
@@ -736,5 +759,5 @@ void settings_save(void) {
     fprintf(f, "pin_enabled=%d\n",       settings.pin_enabled);
     fprintf(f, "pin_code=%s\n",          settings.pin_code);
     fprintf(f, "lang=%d\n",              settings.lang);
-    fclose(f);
+    file_commit(f, CFG_PATH ".tmp", CFG_PATH);
 }

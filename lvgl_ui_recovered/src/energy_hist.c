@@ -154,14 +154,16 @@ static void eh_load(void) {
     FILE * f = fopen(eh_path(0), "rb");
     if (!f) return;
     unsigned magic = 0;
-    if (fread(&magic, 4, 1, f) == 1 && magic == EH_MAGIC &&
-        fread(&eh_head, sizeof eh_head, 1, f) == 1 &&
-        fread(&eh_count, sizeof eh_count, 1, f) == 1 &&
-        fread(ring, sizeof ring, 1, f) == 1) {
-        if (eh_count < 0 || eh_count > EH_CAP || eh_head < 0 || eh_head >= EH_CAP)
-            { eh_head = 0; eh_count = 0; memset(ring, 0, sizeof ring); }
-    }
+    int ok = fread(&magic, 4, 1, f) == 1 && magic == EH_MAGIC &&
+             fread(&eh_head, sizeof eh_head, 1, f) == 1 &&
+             fread(&eh_count, sizeof eh_count, 1, f) == 1 &&
+             fread(ring, sizeof ring, 1, f) == 1 &&
+             eh_count >= 0 && eh_count <= EH_CAP && eh_head >= 0 && eh_head < EH_CAP;
     fclose(f);
+    if (!ok) {
+        eh_head = 0; eh_count = 0; memset(ring, 0, sizeof ring);
+        file_set_aside(eh_path(0));
+    }
 }
 static void eh_save(void) {
     char tmp[256]; snprintf(tmp, sizeof tmp, "%s", eh_path(1));
@@ -172,8 +174,7 @@ static void eh_save(void) {
     fwrite(&eh_head, sizeof eh_head, 1, f);
     fwrite(&eh_count, sizeof eh_count, 1, f);
     fwrite(ring, sizeof ring, 1, f);
-    fclose(f);
-    rename(tmp, eh_path(0));
+    file_commit(f, tmp, eh_path(0));
 }
 static void eh_push(long ts, short pw, short prod, short g_dlph, short w_clpm) {
     pthread_mutex_lock(&eh_mtx);
@@ -192,11 +193,12 @@ static void days_load(void) {
     FILE * f = fopen(ed_path(0), "rb");
     if (!f) return;
     unsigned magic = 0; int n = 0;
-    if (fread(&magic, 4, 1, f) == 1 && magic == ED_MAGIC &&
-        fread(&n, sizeof n, 1, f) == 1 && n >= 0 && n <= EH_DAYS &&
-        fread(days, sizeof(eh_day_t), n, f) == (size_t)n)
-        days_n = n;
+    int ok = fread(&magic, 4, 1, f) == 1 && magic == ED_MAGIC &&
+             fread(&n, sizeof n, 1, f) == 1 && n >= 0 && n <= EH_DAYS &&
+             fread(days, sizeof(eh_day_t), n, f) == (size_t)n;
     fclose(f);
+    if (ok) days_n = n;
+    else    file_set_aside(ed_path(0));   /* years of history: never overwrite it */
 }
 static void days_save(void) {
     char tmp[256]; snprintf(tmp, sizeof tmp, "%s", ed_path(1));
@@ -208,8 +210,7 @@ static void days_save(void) {
     fwrite(&days_n, sizeof days_n, 1, f);
     fwrite(days, sizeof(eh_day_t), days_n, f);
     pthread_mutex_unlock(&days_mtx);
-    fclose(f);
-    rename(tmp, ed_path(0));
+    file_commit(f, tmp, ed_path(0));
 }
 /* Commit a finished day's totals (append, or update if the same ymd recurs). */
 static void days_commit(int ymd, float net_kwh, float gas_m3, float water_m3) {

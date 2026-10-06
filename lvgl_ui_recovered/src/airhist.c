@@ -5,6 +5,7 @@
  */
 #include "airhist.h"
 #include "boxtalk.h"     /* toon_state */
+#include "settings.h"    /* file_commit */
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -52,7 +53,7 @@ static void ph_save(void) {
     unsigned magic = PH_MAGIC;
     fwrite(&magic, 4, 1, f); fwrite(&ph_head, sizeof ph_head, 1, f);
     fwrite(&ph_count, sizeof ph_count, 1, f); fwrite(pring, sizeof pring, 1, f);
-    fclose(f); rename(PH_TMP, PH_FILE);
+    file_commit(f, PH_TMP, PH_FILE);
 }
 static void ph_push(float bar) {
     pthread_mutex_lock(&ph_mtx);
@@ -84,8 +85,7 @@ static void ah_save(void) {
     fwrite(&ah_head, sizeof ah_head, 1, f);
     fwrite(&ah_count, sizeof ah_count, 1, f);
     fwrite(ring, sizeof ring, 1, f);
-    fclose(f);
-    rename(AH_TMP, AH_FILE);
+    file_commit(f, AH_TMP, AH_FILE);
 }
 
 static void ah_push(int eco2, int tvoc) {

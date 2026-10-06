@@ -1,6 +1,8 @@
 #ifndef TOON_SETTINGS_H
 #define TOON_SETTINGS_H
 
+#include <stdio.h>   /* FILE, for file_commit() */
+
 typedef struct {
     int auto_dim_enabled;     /* 0/1 — switch to ambient screen after idle */
     int auto_dim_seconds;     /* 5..300 — idle timeout in seconds */
@@ -342,6 +344,16 @@ extern settings_t settings;
 
 void settings_load(void);
 void settings_save(void);
+
+/* Crash/power-cut safe file replace. Write the new contents to `tmp`, then call
+ * file_commit(f, tmp, path): it flushes, checks for write errors (e.g. flash
+ * full), fsync()s and only then renames tmp over path — so `path` is always
+ * either the complete old or the complete new file, never truncated. On error
+ * tmp is removed and path left untouched. Closes f. Returns 0 on success. */
+int file_commit(FILE * f, const char * tmp, const char * path);
+/* A data file that exists but fails validation: move it to <path>.bad (instead
+ * of letting the next save overwrite it) so the history can still be recovered. */
+void file_set_aside(const char * path);
 
 /* Strip control chars (<0x20) from a string in place — keeps user-entered
  * values from corrupting the cfg or injecting newlines. */
