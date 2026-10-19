@@ -15,8 +15,8 @@
  *   GET  /api/state         →  one-shot toon_state JSON (legacy / curl)
  *   GET  /api/state/stream  →  SSE: emits on state change + 10s heartbeat
  *   POST /api/setpoint      →  body {"value": "18.50"} → roomSetpoint write
- *   POST /api/program       →  body {"state": -1 (Manual) | 0..3
- *                                     (Comfort/Home/Sleep/Away)}
+ *   POST /api/program       →  body {"state": -2 (resume schedule) | -1 (Manual =
+ *                                     program off) | 0..3 (Comfort/Home/Sleep/Away)}
  *   POST /api/curtain       →  body {"action": "open|close|stop"} via HA
  *
  * All static files live under PWA_ROOT (/mnt/data/pwa/). */
@@ -786,11 +786,12 @@ static int handle_program(int fd, const char * body) {
     float v;
     if (!extract_float(body, "state", &v)) {
         return send_status(fd, 400, "Bad Request",
-            "{\"err\":\"need {\\\"state\\\":0-3 or -1}\"}");
+            "{\"err\":\"need {\\\"state\\\":0-3, -1 (manual) or -2 (schedule)}\"}");
     }
     int s = (int)v;
-    if (s < 0) boxtalk_set_manual();
-    else       boxtalk_set_program(s);
+    if      (s == -2) boxtalk_resume_schedule();   /* slave / browser "Program" */
+    else if (s < 0)   boxtalk_set_manual();
+    else              boxtalk_set_program(s);
     return send_status(fd, 200, "OK", "{\"ok\":1}");
 }
 

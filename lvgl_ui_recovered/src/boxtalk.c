@@ -1165,20 +1165,30 @@ int boxtalk_set_program(int preset) {
 }
 
 int boxtalk_set_manual(void) {
-    /* "Manual" in the UI: leave the schedule and hold the setpoint
-     * indefinitely. happ_thermstat only flips activeState to -1 when
-     * roomSetpoint writes a *different* value than the current one — a
-     * same-value write returns "ok" and silently no-ops, so tapping
-     * Manual right after Program (which had already pinned the setpoint
-     * to the preset's stored value) used to leave the device on the
-     * schedule. Nudge by 1 centi-°C (0.01 °C, below display resolution)
-     * to guarantee the write engages manual. */
+    /* "Manual" in the UI: leave the schedule and hold the current setpoint
+     * indefinitely — the stock app's "Program off" (sendProgramState(false)
+     * → ChangeSchemeState state=PROG_MANUAL). happ_thermstat keeps the
+     * setpoint and persists programState=0 in its config, so the hold
+     * survives a reboot. (The old roomSetpoint write only gave a temporary
+     * override, programState=2, which happ ends at the next schedule switch.) */
     temp_override_active = 0;
-    float sp = toon_state.setpoint > 0 ? toon_state.setpoint : 18.0f;
-    int centi = (int)(sp * 100.0f + 0.5f);
-    centi += (centi < 3000) ? 1 : -1;     /* +0.01 °C unless we're at the cap */
-    int rc = boxtalk_set_setpoint(centi / 100.0f);
-    if (rc == 0) toon_state.active_state = -1;
+#ifdef WASM_BUILD
+    extern void wasm_push_event(const char *, const char *);
+    wasm_push_event("/api/program", "{\"state\":-1}");
+    toon_state.program_state = PROG_MANUAL;
+    toon_state.active_state = -1;
+    return 0;
+#endif
+    if (settings.client_mode) {      /* slave: the master switches its happ */
+        int rc = client_link_program(-1);
+        if (rc == 0) { toon_state.program_state = PROG_MANUAL; toon_state.active_state = -1; }
+        return rc;
+    }
+    char q[64];
+    snprintf(q, sizeof(q), "action=changeSchemeState&state=%d", PROG_MANUAL);
+    int rc = http_get_thermstat(q);
+    fprintf(stderr, "[bxt] changeSchemeState mode=%d (program off) rc=%d\n", PROG_MANUAL, rc);
+    if (rc == 0) { toon_state.program_state = PROG_MANUAL; toon_state.active_state = -1; }
     return rc;
 }
 
@@ -1188,6 +1198,26 @@ int boxtalk_resume_schedule(void) {
      * says is currently active, which puts activeState back ≥0 and lets
      * the schedule daemon progress normally from there. */
     temp_override_active = 0;
+#ifdef WASM_BUILD
+    extern void wasm_push_event(const char *, const char *);
+    wasm_push_event("/api/program", "{\"state\":-2}");
+    return 0;
+#endif
+    if (settings.client_mode)        /* slave: the master resumes its happ */
+        return client_link_program(-2);
+    /* Program off (true manual): boxtalk_set_program() would stay manual, as
+     * the stock app does for a preset tap. Turn the program back on instead
+     * (stock sendProgramState(true) → state=PROG_BASE); happ then applies the
+     * current schedule block itself. */
+    if (toon_state.program_state == PROG_MANUAL) {
+        char q[64];
+        snprintf(q, sizeof(q), "action=changeSchemeState&state=%d", PROG_BASE);
+        int rc = http_get_thermstat(q);
+        fprintf(stderr, "[bxt] changeSchemeState mode=%d (program on) rc=%d\n", PROG_BASE, rc);
+        if (rc == 0) toon_state.program_state = PROG_BASE;
+        boxtalk_request_setpoint_refresh();
+        return rc;
+    }
     int now_state = schedule_program_now();
     if (now_state < 0) now_state = 1;     /* fall back to Home if no schedule */
     return boxtalk_set_program(now_state);
@@ -1204,6 +1234,8 @@ int boxtalk_resume_schedule(void) {
  * The "Off" button (boxtalk_set_manual above) clears this flag — that's
  * the explicit "no, I really want a permanent hold" path. */
 static void note_temp_override(void) {
+    /* Program off: +/- just changes the indefinite hold — no auto-resume. */
+    if (toon_state.program_state == PROG_MANUAL) return;
     if (!temp_override_active) {
         /* First nudge — capture the preset that was active. If we're
          * already in manual (active_state < 0), fall back to whatever
