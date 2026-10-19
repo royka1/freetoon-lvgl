@@ -39,6 +39,7 @@ void video_init(void)     {}
 void video_shutdown(void) {}
 void video_open(void)     {}
 void video_close(void)    {}
+int  video_is_open(void)  { return 0; }
 void video_install_button(lv_obj_t * parent, lv_obj_t * anchor) { (void)parent; (void)anchor; }
 #else
 
@@ -100,6 +101,56 @@ static void resolve_rect(void)
 
 /* fork+exec vpu_stream --warm with the current rect. Sets s_pid and
  * remembers the spawn-time rect. Returns 0 on success, -1 on error. */
+/* vpu_stream installs its SIGUSR1/SIGUSR2 handlers early in main(), but a
+ * signal that lands before that (right after a fork+exec) takes the default
+ * action and kills it. So signal the child only once /proc shows it catches
+ * the signal; until then keep the latest request pending and retry from a
+ * short timer. Works with any vpu_stream version. */
+static int          s_pending_sig = 0;
+static lv_timer_t * s_sig_timer   = NULL;
+
+static int child_catches(pid_t pid, int sig)
+{
+    char path[32], line[128];
+    unsigned long long cgt = 0;
+    snprintf(path, sizeof path, "/proc/%d/status", (int)pid);
+    FILE * f = fopen(path, "r");
+    if (!f) return 0;
+    while (fgets(line, sizeof line, f))
+        if (sscanf(line, "SigCgt: %llx", &cgt) == 1) break;
+    fclose(f);
+    return (int)((cgt >> (sig - 1)) & 1);
+}
+
+static void sig_retry_cb(lv_timer_t * t)
+{
+    if (s_pending_sig && s_pid > 0 && !child_catches(s_pid, s_pending_sig))
+        return;                                  /* not ready yet */
+    if (s_pending_sig && s_pid > 0) {
+        if (kill(s_pid, s_pending_sig) < 0)
+            fprintf(stderr, "[video] deferred signal %d to pid=%d failed: %s\n",
+                    s_pending_sig, s_pid, strerror(errno));
+        else
+            printf("[video] deferred signal %d delivered to pid=%d\n", s_pending_sig, s_pid);
+    }
+    s_pending_sig = 0;                           /* sent, or child gone */
+    lv_timer_del(t);
+    s_sig_timer = NULL;
+}
+
+/* SIGUSR1 (show) / SIGUSR2 (hide) to the warm child, race-free. */
+static int signal_child(int sig)
+{
+    if (s_pid <= 0) return -1;
+    if (child_catches(s_pid, sig)) {
+        s_pending_sig = 0;                       /* this request supersedes */
+        return kill(s_pid, sig);
+    }
+    s_pending_sig = sig;                         /* latest show/hide wins */
+    if (!s_sig_timer) s_sig_timer = lv_timer_create(sig_retry_cb, 50, NULL);
+    return 0;
+}
+
 static int spawn_warm(void)
 {
     char xs[12], ys[12], ws[12], hs[12], port[12];
@@ -193,10 +244,10 @@ static void video_init_poll_cb(lv_timer_t * t)
         return;
     }
     /* If the user had the overlay up when the child died, re-arm the
-     * show signal on the new child. vpu_stream installs SIGUSR1 at
-     * the very top of main() so the old fork+exec race window is gone. */
+     * show signal on the new child (signal_child waits until it catches
+     * it, so a signal sent before its handler exists can't kill it). */
     if (s_overlay != NULL && s_pid > 0) {
-        if (kill(s_pid, SIGUSR1) == 0)
+        if (signal_child(SIGUSR1) == 0)
             printf("[video] post-respawn: re-armed show on pid=%d\n", s_pid);
     }
 }
@@ -218,6 +269,8 @@ void video_shutdown(void)
 }
 
 static void on_overlay_tap(lv_event_t * e) { (void)e; video_close(); }
+
+int video_is_open(void) { return s_overlay != NULL; }
 
 void video_open(void)
 {
@@ -249,7 +302,7 @@ void video_open(void)
     if (s_pid <= 0 && spawn_warm() < 0) return;
 
     /* Tell the warm child to start blitting at the next I-VOP. */
-    if (kill(s_pid, SIGUSR1) < 0) {
+    if (signal_child(SIGUSR1) < 0) {
         fprintf(stderr, "[video] SIGUSR1 to pid=%d failed: %s\n", s_pid, strerror(errno));
         return;
     }
@@ -261,7 +314,9 @@ void video_open(void)
     if (!settings.video_overlay)
         fbdev_set_cutout(s_x, s_y, s_x + s_w - 1, s_y + s_h - 1);
 
-    s_overlay = lv_obj_create(lv_scr_act());
+    /* On the top layer, not the active screen: it must stay tappable even if
+     * the screen underneath changes (dim/wake, auto-home) while it's open. */
+    s_overlay = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(s_overlay);
     lv_obj_set_pos(s_overlay, s_x, s_y);
     lv_obj_set_size(s_overlay, s_w, s_h);
@@ -280,7 +335,7 @@ void video_close(void)
     /* Don't kill the child -- just tell it to stop blitting. The decoder
      * stays warm so the next open() shows video in well under a second. */
     if (s_pid > 0) {
-        if (kill(s_pid, SIGUSR2) < 0)
+        if (signal_child(SIGUSR2) < 0)
             fprintf(stderr, "[video] SIGUSR2 to pid=%d failed: %s\n", s_pid, strerror(errno));
     }
     /* Overlay mode never set a cutout (the FG plane composites in hardware);

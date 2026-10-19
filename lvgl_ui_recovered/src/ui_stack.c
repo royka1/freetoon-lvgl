@@ -12,6 +12,7 @@
 #include "settings.h"
 #include "backlight.h"
 #include "boxtalk.h"
+#include "video.h"
 #include <stdio.h>
 #include <unistd.h>
 
@@ -105,6 +106,16 @@ void ui_idle_tick(void) {
         static uint32_t last_als_ms = 0;
         uint32_t nt = lv_tick_get();
         if (nt - last_als_ms > 3000) { apply_active_brightness(); last_als_ms = nt; }
+    }
+
+    /* Watching the camera counts as activity: keep the backlight at the active
+     * level and don't auto-home or push the dim screen behind the video (that
+     * swallowed the closing tap as a wake tap). The idle timer restarts when
+     * the video closes. */
+    if (video_is_open()) {
+        last_activity_ms = lv_tick_get();
+        if (is_dimmed) wake_pending = 1;   /* opened while dimmed (doorbell) */
+        return;
     }
 
     uint32_t now = lv_tick_get();

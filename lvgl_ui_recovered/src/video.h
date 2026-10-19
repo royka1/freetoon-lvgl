@@ -33,5 +33,7 @@ void video_init(void);
 void video_shutdown(void);
 void video_open(void);
 void video_close(void);
+/* 1 while the video overlay is on screen (keeps the UI from idling/dimming). */
+int  video_is_open(void);
 
 #endif
