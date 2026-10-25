@@ -268,13 +268,24 @@ void video_shutdown(void)
     }
 }
 
-static void on_overlay_tap(lv_event_t * e) { (void)e; video_close(); }
+static void on_overlay_tap(lv_event_t * e)
+{
+    /* A tap target that isn't the current overlay is a stray: drop it so
+     * it can't keep swallowing touches over the whole UI. */
+    lv_obj_t * t = lv_event_get_current_target(e);
+    if (t != s_overlay) { lv_obj_del_async(t); return; }
+    video_close();
+}
 
 int video_is_open(void) { return s_overlay != NULL; }
 
 void video_open(void)
 {
     if (!settings.video_enabled) return;
+    /* Already showing (e.g. doorbell "show" while the user is watching):
+     * a second overlay would orphan the first, leaving an invisible
+     * full-screen tap target that eats every touch after "hide". */
+    if (s_overlay) return;
 
     resolve_rect();
     reap_if_gone();
